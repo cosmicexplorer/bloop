@@ -23,6 +23,7 @@ object Dag {
     val missingDeps = new scala.collection.mutable.HashMap[Project, List[String]]()
     val visited = new scala.collection.mutable.HashMap[Project, Dag[Project]]()
     val visiting = new scala.collection.mutable.LinkedHashSet[Project]()
+    System.err.println("hashsets3")
     val dependents = new scala.collection.mutable.HashSet[Dag[Project]]()
     val projects = projectsMap.values.toList
     val traces = new ListBuffer[RecursiveTrace]()
@@ -81,8 +82,8 @@ object Dag {
     )
   }
 
-  def dagFor[T](dags: List[Dag[T]], target: T): Option[Dag[T]] =
-    dagFor(dags, Set(target)).flatMap(_.headOption)
+  def dagFor[T](dags: List[Dag[T]], target: T, f: T => String): Option[Dag[T]] =
+    dagFor(dags, Set(target), f).flatMap(_.headOption)
 
   /**
    * Return a list of dags that match all the targets.
@@ -147,10 +148,15 @@ object Dag {
    */
   def reduce[T](dags: List[Dag[T]], targets: Set[T]): Set[T] = {
     val transitives = scala.collection.mutable.HashMap[Dag[T], List[T]]()
+    System.err.println("hashset2")
     val subsumed = scala.collection.mutable.HashSet[T]()
+
+    val visited = scala.collection.mutable.HashSet[Dag[T]]()
+
     def loop(dags: Set[Dag[T]], targets: Set[T]): Set[T] = {
       dags.foldLeft[Set[T]](Set()) {
-        case (acc, dag) =>
+        case (acc, dag) => if (visited.contains(dag)) { acc } else {
+          visited.add(dag)
           dag match {
             case Leaf(value) if targets.contains(value) =>
               if (subsumed.contains(value)) acc else acc.+(value)
@@ -167,6 +173,7 @@ object Dag {
             case Parent(_, children) => loop(children.toSet, targets) ++ acc
             case Aggregate(dags) => loop(dags.toSet, targets)
           }
+        }
       }
     }
 
@@ -193,6 +200,7 @@ object Dag {
   case class InverseDependencies[T](reduced: List[T], strictlyInverseNodes: List[T])
 
   def inverseDependencies[T](dags: List[Dag[T]], targets: List[T]): InverseDependencies[T] = {
+    System.err.println("hashsets1")
     val nonTargetsVisited = scala.collection.mutable.HashSet[Dag[T]]()
     val roots = scala.collection.mutable.HashSet[T]()
     val cascaded = scala.collection.mutable.HashSet[T]()
@@ -246,6 +254,7 @@ object Dag {
   }
 
   def dfs[T](dag: Dag[T]): List[T] = {
+    // System.err.println("hashset0")
     val visited = scala.collection.mutable.HashSet[Dag[T]]()
     val buffer = new ListBuffer[T]()
     def loop(dag: Dag[T]): Unit = {
@@ -253,6 +262,9 @@ object Dag {
       else {
         visited.add(dag)
         dag match {
+          // TODO: it's definitely in .+=, here or in Parent(_, _) case!
+          // Highly possible that we are leaking memory by incorrectly calculating hashes (from
+          // changing data?).
           case Leaf(value) => buffer.+=(value)
           case Aggregate(dags) =>
             dags.foreach(loop(_))
