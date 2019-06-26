@@ -1,0 +1,23 @@
+#!/usr/bin/env sh
+
+BLOOP_REV_TO_FIND='1.3.2+6-a58d9626+20190625-1923'
+
+java_opts=()
+server_args=()
+for arg in "$@"; do
+  if [[ $arg == -J* ]]; then
+    java_opts+=(${arg#"-J"})
+  else
+    server_args+=($arg)
+  fi
+done
+
+echo "Detected java options are '${java_opts[@]}'"
+BASE_BIN_DIR=$(dirname "$0")
+COURSIER_BIN="$BASE_BIN_DIR/blp-coursier"
+/usr/libexec/java_home -v 1.8 -F -R --exec java \
+   "${java_opts[@]}" -jar "$COURSIER_BIN" launch "ch.epfl.scala:bloop-frontend_2.12:${BLOOP_REV_TO_FIND}" \
+  -r bintray:scalameta/maven \
+  -r bintray:scalacenter/releases \
+  -r https://oss.sonatype.org/content/repositories/staging \
+  --main bloop.Server -- "${server_args[@]}"
