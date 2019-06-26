@@ -22,6 +22,7 @@ object Dag {
     val missingDeps = new scala.collection.mutable.HashMap[Project, List[String]]()
     val visited = new scala.collection.mutable.HashMap[Project, Dag[Project]]()
     val visiting = new scala.collection.mutable.LinkedHashSet[Project]()
+    System.err.println("hashsets3")
     val dependents = new scala.collection.mutable.HashSet[Dag[Project]]()
     val projects = projectsMap.values.toList
     val traces = new ListBuffer[RecursiveTrace]()
@@ -80,8 +81,8 @@ object Dag {
     )
   }
 
-  def dagFor[T](dags: List[Dag[T]], target: T): Option[Dag[T]] =
-    dagFor(dags, Set(target)).flatMap(_.headOption)
+  def dagFor[T](dags: List[Dag[T]], target: T, f: T => String): Option[Dag[T]] =
+    dagFor(dags, Set(target), f).flatMap(_.headOption)
 
   /**
    * Return a list of dags that match all the targets.
@@ -92,22 +93,46 @@ object Dag {
    * @param targets The targets for which we want to find a dag.
    * @return An optional value of a list of dags.
    */
-  def dagFor[T](dags: List[Dag[T]], targets: Set[T]): Option[List[Dag[T]]] = {
-    dags.foldLeft[Option[List[Dag[T]]]](None) {
-      case (found: Some[List[Dag[T]]], _) => found
-      case (acc, dag) =>
-        def aggregate(dag: Dag[T]): Option[List[Dag[T]]] = acc match {
-          case Some(dags) => Some(dag :: dags)
-          case None => Some(List(dag))
-        }
+  def dagFor[T](dags: List[Dag[T]], targets: Set[T], f: T => String): Option[List[Dag[T]]] = {
 
-        dag match {
-          case Leaf(value) if targets.contains(value) => aggregate(dag)
-          case Leaf(value) => None
-          case Parent(value, children) if targets.contains(value) => aggregate(dag)
-          case Parent(value, children) => dagFor(children, targets)
-          case Aggregate(dags) => dagFor(dags, targets)
+    val nonAggregateNodes = new scala.collection.mutable.HashMap[String, Dag[T]]()
+
+    def allDagsFor(dag: Dag[T]): Seq[Dag[T]] = dag match {
+      case Leaf(value) => {
+        val name = f(value)
+        if (nonAggregateNodes.contains(name)) {
+          Seq()
+        } else {
+          nonAggregateNodes.put(name, dag)
+          if (targets.contains(value)) {
+            Seq(dag)
+          } else {
+            Seq()
+          }
         }
+      }
+      case Parent(value, children) => {
+        val name = f(value)
+        if (nonAggregateNodes.contains(name)) {
+          Seq()
+        } else {
+          nonAggregateNodes.put(name, dag)
+          val start = if (targets.contains(value)) {
+            Seq(dag)
+          } else {
+            Seq()
+          }
+          start ++ children.flatMap(allDagsFor(_))
+        }
+      }
+      case Aggregate(dags) => dags.flatMap(allDagsFor(_))
+    }
+
+    val ret = dags.flatMap(allDagsFor(_))
+    if (ret.isEmpty) {
+      None
+    } else {
+      Some(ret.toList)
     }
   }
 
@@ -143,10 +168,15 @@ object Dag {
    */
   def reduce[T](dags: List[Dag[T]], targets: Set[T]): Set[T] = {
     val transitives = scala.collection.mutable.HashMap[Dag[T], List[T]]()
+    System.err.println("hashset2")
     val subsumed = scala.collection.mutable.HashSet[T]()
+
+    val visited = scala.collection.mutable.HashSet[Dag[T]]()
+
     def loop(dags: Set[Dag[T]], targets: Set[T]): Set[T] = {
       dags.foldLeft[Set[T]](Set()) {
-        case (acc, dag) =>
+        case (acc, dag) => if (visited.contains(dag)) { acc } else {
+          visited.add(dag)
           dag match {
             case Leaf(value) if targets.contains(value) =>
               if (subsumed.contains(value)) acc else acc.+(value)
@@ -163,6 +193,7 @@ object Dag {
             case Parent(_, children) => loop(children.toSet, targets) ++ acc
             case Aggregate(dags) => loop(dags.toSet, targets)
           }
+        }
       }
     }
 
@@ -189,6 +220,7 @@ object Dag {
   case class InverseDependencies[T](reduced: List[T], strictlyInverseNodes: List[T])
 
   def inverseDependencies[T](dags: List[Dag[T]], targets: List[T]): InverseDependencies[T] = {
+    System.err.println("hashsets1")
     val nonTargetsVisited = scala.collection.mutable.HashSet[Dag[T]]()
     val roots = scala.collection.mutable.HashSet[T]()
     val cascaded = scala.collection.mutable.HashSet[T]()
@@ -242,6 +274,7 @@ object Dag {
   }
 
   def dfs[T](dag: Dag[T]): List[T] = {
+    // System.err.println("hashset0")
     val visited = scala.collection.mutable.HashSet[Dag[T]]()
     val buffer = new ListBuffer[T]()
     def loop(dag: Dag[T]): Unit = {
@@ -249,6 +282,9 @@ object Dag {
       else {
         visited.add(dag)
         dag match {
+          // TODO: it's definitely in .+=, here or in Parent(_, _) case!
+          // Highly possible that we are leaking memory by incorrectly calculating hashes (from
+          // changing data?).
           case Leaf(value) => buffer.+=(value)
           case Aggregate(dags) =>
             dags.foreach(loop(_))
