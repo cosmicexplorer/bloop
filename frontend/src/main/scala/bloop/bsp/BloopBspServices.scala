@@ -11,6 +11,12 @@ import java.util.stream.Collectors
 import bloop.io.ServerHandle
 import bloop.data.WorkspaceSettings
 import bloop.bsp.BloopBspDefinitions.BloopExtraBuildParams
+
+import io.circe.Decoder.Result
+import io.circe.derivation.JsonCodec
+import io.circe.syntax._
+import io.circe._
+
 import bloop.{CompileMode, Compiler, ScalaInstance}
 import bloop.cli.{Commands, ExitStatus, Validate}
 import bloop.dap.{DebugServer, DebuggeeRunner, StartedDebugServer}
@@ -320,6 +326,7 @@ final class BloopBspServices(
       targets: Seq[bsp.BuildTargetIdentifier],
       state: State
   ): Either[String, Seq[ProjectMapping]] = {
+    bspLogger.info(s"targets: $targets")
     if (targets.isEmpty) {
       Left("Empty build targets. Expected at least one build target identifier.")
     } else {
@@ -413,8 +420,16 @@ final class BloopBspServices(
           Right(bsp.CompileResult(originId, bsp.StatusCode.Cancelled, None, None))
         else {
           errorMsgs match {
-            case Nil => Right(bsp.CompileResult(originId, bsp.StatusCode.Ok, None, None))
-            case xs => Right(bsp.CompileResult(originId, bsp.StatusCode.Error, None, None))
+            case Nil => {
+              val projectNameToClassesDirMapping = userProjects.map(_._2)
+                .map(p => (p.name -> newState.client.getUniqueClassesDirFor(p).toString))
+                .toMap
+              Right(bsp.CompileResult(
+                None, bsp.StatusCode.Ok,
+                Some("project-name-classes-dir-mapping"),
+                Some(projectNameToClassesDirMapping.asJson)))
+            }
+            case xs => Right(bsp.CompileResult(None, bsp.StatusCode.Error, None, None))
           }
         }
       }
@@ -432,6 +447,7 @@ final class BloopBspServices(
           Task.now((state, Right(bsp.CompileResult(None, bsp.StatusCode.Error, None, None))))
         case Right(mappings) =>
           val compileArgs = params.arguments.getOrElse(Nil)
+          bspLogger.info(s"mappings: $mappings")
           compileProjects(mappings, state, compileArgs, params.originId, logger)
       }
     }

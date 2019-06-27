@@ -192,10 +192,11 @@ final class Shell(runWithInterpreter: Boolean, detectPython: Boolean) {
       binaryCmd: List[String],
       out: PrintStream
   ): Option[ServerStatus] = {
+    runBloopAbout(binaryCmd, out)
     // --nailgun-help is always interpreted in the script, no connection with the server is required
-    val status = runCommand(binaryCmd ++ List("--nailgun-help"), Environment.cwd, Some(2))
-    if (!status.isOk) None
-    else runBloopAbout(binaryCmd, out)
+    // val status = runCommand(binaryCmd ++ List("--nailgun-help"), Environment.cwd, Some(2))
+    // if (!status.isOk) None
+    // else runBloopAbout(binaryCmd, out)
   }
 
   def isPythonInClasspath: Boolean = {
