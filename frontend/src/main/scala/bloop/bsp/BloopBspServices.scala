@@ -7,6 +7,11 @@ import java.nio.file.{Files, FileSystems, Path}
 import java.util.concurrent.ConcurrentHashMap
 import java.util.stream.Collectors
 
+import io.circe.Decoder.Result
+import io.circe.derivation.JsonCodec
+import io.circe.syntax._
+import io.circe._
+
 import bloop.{CompileMode, Compiler, ScalaInstance}
 import bloop.cli.{Commands, ExitStatus, Validate}
 import bloop.data.{Platform, Project, ClientInfo}
@@ -251,6 +256,7 @@ final class BloopBspServices(
       targets: Seq[bsp.BuildTargetIdentifier],
       state: State
   ): Either[String, Seq[ProjectMapping]] = {
+    bspLogger.info(s"targets: $targets")
     targets.headOption match {
       case Some(head) =>
         val init = mapToProject(head, state).map(m => m :: Nil)
@@ -350,7 +356,15 @@ final class BloopBspServices(
           Right(bsp.CompileResult(None, bsp.StatusCode.Cancelled, None, None))
         else {
           errorMsgs match {
-            case Nil => Right(bsp.CompileResult(None, bsp.StatusCode.Ok, None, None))
+            case Nil => {
+              val projectNameToClassesDirMapping = userProjects.map(_._2)
+                .map(p => (p.name -> newState.client.getUniqueClassesDirFor(p).toString))
+                .toMap
+              Right(bsp.CompileResult(
+                None, bsp.StatusCode.Ok,
+                Some("project-name-classes-dir-mapping"),
+                Some(projectNameToClassesDirMapping.asJson)))
+            }
             case xs => Right(bsp.CompileResult(None, bsp.StatusCode.Error, None, None))
           }
         }
@@ -369,6 +383,7 @@ final class BloopBspServices(
           Task.now((state, Right(bsp.CompileResult(None, bsp.StatusCode.Error, None, None))))
         case Right(mappings) =>
           val compileArgs = params.arguments.getOrElse(Nil)
+          bspLogger.info(s"mappings: $mappings")
           compileProjects(mappings, state, compileArgs)
       }
     }
