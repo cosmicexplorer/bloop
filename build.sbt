@@ -57,7 +57,8 @@ val backend = project
       Dependencies.pprint,
       Dependencies.difflib,
       Dependencies.asm,
-      Dependencies.asmUtil
+      Dependencies.asmUtil,
+      Dependencies.rsc
     )
   )
 
