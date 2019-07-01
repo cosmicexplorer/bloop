@@ -37,6 +37,7 @@ import monix.execution.CancelableFuture
 import monix.execution.ExecutionModel
 import sbt.internal.inc.bloop.internal.BloopStamps
 
+// TODO: it's not yet clear whether we'll want to support remote compiles at all!
 case class RemoteCompileInput(sources: Seq[AbsolutePath])
 
 case class RemoteCompileOutput(classesDir: AbsolutePath)

@@ -52,6 +52,7 @@ object Dependencies {
   val zipkinSenderVersion = "2.7.15"
   val jnaVersion = "4.5.0"
   val asmVersion = "6.0"
+  val rscVersion = "0.0.0-780-e57a1c9c"
 
   import sbt.librarymanagement.syntax.stringToOrganization
   val zinc = "ch.epfl.scala" %% "zinc" % zincVersion
@@ -128,4 +129,6 @@ object Dependencies {
   val jnaPlatform = "net.java.dev.jna" % "jna-platform" % jnaVersion
   val asm = "org.ow2.asm" % "asm" % asmVersion
   val asmUtil = "org.ow2.asm" % "asm-util" % asmVersion
+
+  val rsc = "com.twitter" %% "rsc" % rscVersion
 }
