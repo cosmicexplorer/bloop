@@ -777,6 +777,11 @@ object CompileGraph {
               }
 
             case Parent(project, dependencies) =>
+              // TODO: kick off rsc compiles of all of the non-macro targets (have to pipe in which
+              // targets define/use macros!!) and use that for the classpath.
+              // TODO: ensure rsc uses symbol index cache from warp when invoked!!!!!!!!
+              // TODO: `rsc.classpath.Classpath.go()` will do all the necessary things to
+              // concurrently populate its classpath!!!!!
               val downstream = dependencies.map(loop)
               Task.gatherUnordered(downstream).flatMap { dagResults =>
                 val failed = dagResults.flatMap(dag => blockedBy(dag).toList)

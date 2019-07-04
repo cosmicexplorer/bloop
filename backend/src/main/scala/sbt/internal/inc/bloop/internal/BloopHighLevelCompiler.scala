@@ -106,16 +106,7 @@ final class BloopHighLevelCompiler(
     val compileScala: Task[Unit] = {
       if (scalaSources.isEmpty) Task.now(())
       else {
-        val sources = {
-          if (separateJavaAndScala) {
-            // No matter if it's scala->java or mixed, we populate java symbols from sources
-            val transitiveJavaSources = compileMode.oracle.askForJavaSourcesOfIncompleteCompilations
-            includedSources ++ transitiveJavaSources.filterNot(_.getName == "routes.java")
-          } else {
-            if (setup.order == CompileOrder.Mixed) includedSources
-            else scalaSources
-          }
-        }
+        val sources = if (setup.order == CompileOrder.Mixed) includedSources else scalaSources
         val cargs = new CompilerArguments(scalac.scalaInstance, config.classpathOptions)
         def compileSources(
             sources: Seq[File],
