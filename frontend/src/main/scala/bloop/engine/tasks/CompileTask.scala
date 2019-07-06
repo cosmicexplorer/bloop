@@ -7,7 +7,8 @@ import bloop.{
   CompileOutPaths,
   CompileProducts,
   CompileBackgroundTasks,
-  CompileExceptions
+  CompileExceptions,
+  RemoteCompileHandle
 }
 import bloop.cli.ExitStatus
 import bloop.data.Project
@@ -50,7 +51,8 @@ object CompileTask {
       pipeline: Boolean,
       excludeRoot: Boolean,
       cancelCompilation: Promise[Unit],
-      rawLogger: UseSiteLogger
+      rawLogger: UseSiteLogger,
+      remoteCompileHandle: RemoteCompileHandle
   ): Task[State] = {
     import bloop.data.ClientInfo
     import bloop.internal.build.BuildInfo
@@ -157,7 +159,8 @@ object CompileTask {
               ExecutionContext.ioScheduler,
               ExecutionContext.ioExecutor,
               bundle.dependenciesData.allInvalidatedClassFiles,
-              bundle.dependenciesData.allGeneratedClassFilePaths
+              bundle.dependenciesData.allGeneratedClassFilePaths,
+              remoteCompileHandle
             )
           }
 

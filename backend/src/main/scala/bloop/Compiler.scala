@@ -35,6 +35,11 @@ import monix.execution.CancelableFuture
 import monix.execution.ExecutionModel
 import sbt.internal.inc.bloop.internal.BloopStamps
 
+case class RemoteCompileHandle(
+  in: java.io.InputStream,
+  out: java.io.OutputStream
+)
+
 case class CompileInputs(
     scalaInstance: ScalaInstance,
     compilerCache: CompilerCache,
@@ -58,7 +63,8 @@ case class CompileInputs(
     ioScheduler: Scheduler,
     ioExecutor: Executor,
     invalidatedClassFilesInDependentProjects: Set[File],
-    generatedClassFilePathsInDependentProjects: Map[String, File]
+    generatedClassFilePathsInDependentProjects: Map[String, File],
+    remoteCompileHandle: RemoteCompileHandle
 )
 
 case class CompileOutPaths(
