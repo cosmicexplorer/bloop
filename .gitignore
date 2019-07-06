@@ -38,3 +38,6 @@ benchmark-bridge/corpus/
 
 # Scala Native
 lowered.hnir
+
+# for ./publish-updated-bloop.zsh !
+/BLOOP_VERSION
