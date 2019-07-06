@@ -1,6 +1,6 @@
 package bloop.engine
 
-import bloop.CompileMode
+import bloop.{CompileMode, RemoteCompileHandle}
 import bloop.bsp.BspServer
 import bloop.cli._
 import bloop.cli.CliParsers.CommandsMessages
@@ -166,7 +166,10 @@ object Interpreter {
         cmd.pipeline,
         excludeRoot,
         Promise[Unit](),
-        state.logger
+        state.logger,
+        RemoteCompileHandle(
+          in = new java.io.PipedInputStream(),
+          out = new java.io.PipedOutputStream())
       )
     }
 
