@@ -12,7 +12,7 @@ import io.circe.derivation.JsonCodec
 import io.circe.syntax._
 import io.circe._
 
-import bloop.{CompileMode, Compiler, ScalaInstance, RemoteCompileHandle}
+import bloop._
 import bloop.cli.{Commands, ExitStatus, Validate}
 import bloop.data.{Platform, Project, ClientInfo}
 import bloop.engine.tasks.{CompileTask, Tasks, TestTask}
@@ -31,7 +31,7 @@ import ch.epfl.scala.bsp.{BuildTargetIdentifier, MessageType, ShowMessageParams,
 import scala.meta.jsonrpc.{JsonRpcClient, Response => JsonRpcResponse, Services => JsonRpcServices}
 
 import monix.eval.Task
-import monix.reactive.Observer
+import monix.reactive.{Observable, Observer}
 import monix.execution.Scheduler
 import monix.execution.atomic.AtomicInt
 import monix.execution.atomic.AtomicBoolean
@@ -43,11 +43,6 @@ import scala.concurrent.duration.FiniteDuration
 import scala.util.Success
 import scala.util.Failure
 import monix.execution.Cancelable
-
-case class RemoteCompileIPCInterface(
-  in: java.io.InputStream,
-  out: java.io.OutputStream
-)
 
 final class BloopBspServices(
     callSiteState: State,
@@ -72,8 +67,6 @@ final class BloopBspServices(
 
   /** The return type of a bsp computation wrapped by `ifInitialized` */
   private type BspComputation[T] = State => BspResult[T]
-
-  private var remoteCompileInterface: RemoteCompileIPCInterface = null
 
   /**
    * Schedule the async response handlers to run on the default computation
@@ -192,26 +185,6 @@ final class BloopBspServices(
       () => isClientConnected.get
     )
 
-    assert(remoteCompileInterface == null)
-    // TODO: open this as an "rw" RandomAccessFile!!! https://stackoverflow.com/questions/30393606/reading-writing-a-named-pipe-in-java/30394059#30394059
-
-    val file = params.data.get.as[Map[String, String]] match {
-      case Left(x) => throw new Exception(s"oh!!! $x")
-      case Right(cfg) =>
-        new java.io.RandomAccessFile(cfg("output_stream"), "rw")
-        // TODO: ignored!!!
-        // val inFilePath = Paths.get(cfg("input_stream"))
-        // (new java.io.FileOutputStream(outFilePath.toFile) -> new java.io.FileInputStream(inFilePath.toFile))
-    }
-    val channel = file.getChannel
-    val fileIn = java.nio.channels.Channels.newInputStream(channel)
-    val fileOut = java.nio.channels.Channels.newOutputStream(channel)
-
-    remoteCompileInterface = RemoteCompileIPCInterface(
-      in = fileIn,
-      out = fileOut
-    )
-
     reloadState(configDir, client).map { state =>
       callSiteState.logger.info("request received: build/initialize")
       clientInfo.success(client)
@@ -231,7 +204,7 @@ final class BloopBspServices(
             resourcesProvider = Some(true),
             buildTargetChangedProvider = Some(false)
           ),
-          data = Some(Map("streams_opened" -> true).asJson),
+          data = None,
         )
       )
     }
@@ -240,7 +213,7 @@ final class BloopBspServices(
   val isInitialized = scala.concurrent.Promise[BspResponse[Unit]]()
   val isInitializedTask = Task.fromFuture(isInitialized.future).memoize
   def initialized(
-      initializedBuildParams: bsp.InitializedBuildParams
+    initializedBuildParams: bsp.InitializedBuildParams
   ): Unit = {
     isInitialized.success(Right(()))
     callSiteState.logger.info("BSP initialization handshake complete.")
@@ -346,10 +319,8 @@ final class BloopBspServices(
         false,
         cancelCompilation,
         bspLogger,
-        RemoteCompileHandle(
-          in = new java.io.PipedInputStream(),
-          out = new java.io.PipedOutputStream())
-      )
+        // TODO: make this work via hacking bsp messages@@
+        remoteCompileHandle = RemoteCompileHandle(remoteCompiler = None))
     }
 
     val projects: List[Project] = {

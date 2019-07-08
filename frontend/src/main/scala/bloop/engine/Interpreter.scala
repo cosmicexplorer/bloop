@@ -167,10 +167,7 @@ object Interpreter {
         excludeRoot,
         Promise[Unit](),
         state.logger,
-        RemoteCompileHandle(
-          in = new java.io.PipedInputStream(),
-          out = new java.io.PipedOutputStream())
-      )
+        RemoteCompileHandle.empty)
     }
 
     compileTask.map(_.mergeStatus(ExitStatus.Ok))
