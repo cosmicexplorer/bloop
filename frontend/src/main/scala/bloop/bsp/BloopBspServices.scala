@@ -17,7 +17,7 @@ import io.circe.derivation.JsonCodec
 import io.circe.syntax._
 import io.circe._
 
-import bloop.{CompileMode, Compiler, ScalaInstance, RemoteCompileHandle}
+import bloop._
 import bloop.cli.{Commands, ExitStatus, Validate}
 import bloop.dap.{DebugServer, DebuggeeRunner, StartedDebugServer}
 import bloop.data.{ClientInfo, Platform, Project}
@@ -37,7 +37,7 @@ import ch.epfl.scala.bsp.{BuildTargetIdentifier, MessageType, ShowMessageParams,
 
 import scala.meta.jsonrpc.{JsonRpcClient, Response => JsonRpcResponse, Services => JsonRpcServices}
 import monix.eval.Task
-import monix.reactive.Observer
+import monix.reactive.{Observable, Observer}
 import monix.execution.Scheduler
 import monix.execution.atomic.AtomicInt
 import monix.execution.atomic.AtomicBoolean
@@ -52,11 +52,6 @@ import scala.util.Failure
 import monix.execution.Cancelable
 import io.circe.{Decoder, Json}
 import bloop.engine.Feedback
-
-case class RemoteCompileIPCInterface(
-  in: java.io.InputStream,
-  out: java.io.OutputStream
-)
 
 final class BloopBspServices(
     callSiteState: State,
@@ -81,8 +76,6 @@ final class BloopBspServices(
 
   /** The return type of a bsp computation wrapped by `ifInitialized` */
   private type BspComputation[T] = (State, BspServerLogger) => BspResult[T]
-
-  private var remoteCompileInterface: RemoteCompileIPCInterface = null
 
   /**
    * Schedule the async response handlers to run on the default computation
@@ -267,7 +260,7 @@ final class BloopBspServices(
     )
 
     reloadState(configDir, client, metalsSettings, bspLogger).map { state =>
-      callSiteState.logger.info(s"request received: build/initialize")
+      callSiteState.logger.info("request received: build/initialize")
       clientInfo.success(client)
       connectedBspClients.put(client, configDir)
       observer.foreach(_.onNext(state.copy(client = client)))
@@ -285,7 +278,7 @@ final class BloopBspServices(
             resourcesProvider = Some(true),
             buildTargetChangedProvider = Some(false)
           ),
-          data = Some(Map("streams_opened" -> true).asJson),
+          data = None,
         )
       )
     }
@@ -308,7 +301,7 @@ final class BloopBspServices(
   val isInitialized = scala.concurrent.Promise[BspResponse[Unit]]()
   val isInitializedTask = Task.fromFuture(isInitialized.future).memoize
   def initialized(
-      initializedBuildParams: bsp.InitializedBuildParams
+    initializedBuildParams: bsp.InitializedBuildParams
   ): Unit = {
     isInitialized.success(Right(()))
     callSiteState.logger.info("BSP initialization handshake complete.")
@@ -418,10 +411,8 @@ final class BloopBspServices(
         false,
         cancelCompilation,
         bspLogger,
-        RemoteCompileHandle(
-          in = new java.io.PipedInputStream(),
-          out = new java.io.PipedOutputStream())
-      )
+        // TODO: make this work via hacking bsp messages@@
+        remoteCompileHandle = RemoteCompileHandle(remoteCompiler = None))
     }
 
     val projects: List[Project] = {
