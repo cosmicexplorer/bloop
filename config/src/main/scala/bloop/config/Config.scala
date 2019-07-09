@@ -228,8 +228,7 @@ object Config {
       sbt: Option[Sbt],
       test: Option[Test],
       platform: Option[Platform],
-      resolution: Option[Resolution],
-      rscCompatible: Boolean = false
+      resolution: Option[Resolution]
   )
 
   object Project {

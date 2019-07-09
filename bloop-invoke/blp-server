@@ -1,6 +1,6 @@
 #!/usr/bin/env sh
 
-BLOOP_REV_TO_FIND='1.3.2+50-a034d20b+20190709-0035'
+BLOOP_REV_TO_FIND='1.3.2+51-8d4861c9+20190709-1558'
 
 java_opts=()
 server_args=()
