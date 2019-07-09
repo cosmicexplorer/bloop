@@ -187,7 +187,8 @@ lazy val frontend: Project = project
       Dependencies.scalazCore,
       Dependencies.monix,
       Dependencies.caseApp,
-      Dependencies.nuprocess
+      Dependencies.nuprocess,
+      Dependencies.circeGeneric
     ),
     dependencyOverrides += Dependencies.shapeless
   )
