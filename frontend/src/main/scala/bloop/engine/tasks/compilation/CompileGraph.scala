@@ -27,6 +27,8 @@ import monix.execution.atomic.AtomicBoolean
 import monix.reactive.{Observable, MulticastStrategy}
 import xsbti.compile.PreviousResult
 
+import rsc.classpath.Classpath
+
 import scala.concurrent.Promise
 import scala.util.{Failure, Success}
 import xsbti.compile.Signature

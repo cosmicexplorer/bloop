@@ -21,12 +21,13 @@ import xsbti.compile.Signature
  */
 abstract class CompilerOracle {
 
-  /*
-   compile(util/util-core:util-core-util) -> {
-
-   }
+  /**
+   * Returns java sources of all those dependent projects whose compilations
+   * are not yet finished when build pipelining is enabled. If build pipelining
+   * is disabled, returns always an empty list since the class files of Java
+   * sources are already present in the compilation classpath.
    */
-  def blockOnToObtainDependentOutlinesOrClassfiles(): Seq[File]
+  def askForJavaSourcesOfIncompleteCompilations: List[File]
 
   /**
    * Registers a macro defined during this compilation run. It takes a full
