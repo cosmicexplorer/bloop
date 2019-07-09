@@ -16,6 +16,8 @@ object Dependencies {
   val bspVersion = "2.0.0-M4+10-61e61e87"
   val javaDebugVersion = "0.21.0+1-7f1080f1"
 
+  val zincVersion = "1.3.0-M4+22-4704d479"
+  val bspVersion = "2.0.0-M4+2-faf8c029"
   val scalazVersion = "7.2.20"
   val coursierVersion = "1.1.0-M14-4"
   val lmVersion = "1.0.0"

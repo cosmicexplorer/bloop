@@ -14,6 +14,7 @@ import bloop.bsp.BloopBspDefinitions.BloopExtraBuildParams
 
 import io.circe.Decoder.Result
 import io.circe.derivation.JsonCodec
+import io.circe.generic.semiauto._
 import io.circe.syntax._
 import io.circe._
 
@@ -37,7 +38,7 @@ import ch.epfl.scala.bsp.{BuildTargetIdentifier, MessageType, ShowMessageParams,
 
 import scala.meta.jsonrpc.{JsonRpcClient, Response => JsonRpcResponse, Services => JsonRpcServices}
 import monix.eval.Task
-import monix.reactive.{Observable, Observer}
+import monix.reactive.{Observable, Observer, Consumer}
 import monix.execution.Scheduler
 import monix.execution.atomic.AtomicInt
 import monix.execution.atomic.AtomicBoolean
@@ -53,17 +54,59 @@ import monix.execution.Cancelable
 import io.circe.{Decoder, Json}
 import bloop.engine.Feedback
 
+case class BloopHackedRemoteCompileProtocolOverBSP(
+  remoteCompilesSemaphore: ConcurrentHashMap[RemoteCompileInput, Promise[RemoteCompileOutput]],
+  implicit val client: JsonRpcClient,
+  override val scheduler: Scheduler
+) extends RemoteCompiler {
+
+  override def requestRemoteCompile(req: RemoteCompileInput): Task[RemoteCompileOutput] = {
+    Option(remoteCompilesSemaphore.get(req)) match {
+      case Some(p) =>
+        // assert(p.future.isCompleted)
+        Task.fromFuture(p.future)
+      case None =>
+        val p = Promise[RemoteCompileOutput]()
+        // NB: this check-then-set impl is not thread-safe for colliding `req`s! That should be
+        // fine, though.
+        remoteCompilesSemaphore.put(req, p)
+        val ret = Task.fromFuture(endpoints.Build.taskFinish.notify(
+          bsp.TaskFinishParams(
+            bsp.TaskId("???", None),
+            None,
+            None,
+            bsp.StatusCode.Ok,
+            dataKind = Some("bloop-hacked-remote-compile-request"),
+            data = Some(Map(
+              "sources" -> req.sources.map(_.toString)
+            ).asJson))
+        )).flatMap { Unit => Task.fromFuture(p.future) }
+        // p.success(RemoteCompileOutput(classesDir = AbsolutePath("asdf")))
+        ret
+    }
+  }
+}
+object BloopHackedRemoteCompileProtocolOverBSP {
+  def apply(
+    remoteCompilesSemaphore: ConcurrentHashMap[RemoteCompileInput, Promise[RemoteCompileOutput]],
+    scheduler: Scheduler
+  )(implicit client: JsonRpcClient): BloopHackedRemoteCompileProtocolOverBSP = BloopHackedRemoteCompileProtocolOverBSP(
+    remoteCompilesSemaphore, client, scheduler)
+}
+
 final class BloopBspServices(
-    callSiteState: State,
-    client: JsonRpcClient,
-    relativeConfigPath: RelativePath,
-    stopBspServer: Cancelable,
-    observer: Option[Observer.Sync[State]],
-    isClientConnected: AtomicBoolean,
-    connectedBspClients: ConcurrentHashMap[ClientInfo.BspClientInfo, AbsolutePath],
-    computationScheduler: Scheduler,
-    ioScheduler: Scheduler
+  callSiteState: State,
+  client: JsonRpcClient,
+  relativeConfigPath: RelativePath,
+  stopBspServer: Cancelable,
+  observer: Option[Observer.Sync[State]],
+  isClientConnected: AtomicBoolean,
+  connectedBspClients: ConcurrentHashMap[ClientInfo.BspClientInfo, AbsolutePath],
+  computationScheduler: Scheduler,
+  ioScheduler: Scheduler
 ) {
+  val runningRemoteCompiles = new ConcurrentHashMap[RemoteCompileInput, Promise[RemoteCompileOutput]]()
+
   private implicit val debugFilter: DebugFilter = DebugFilter.Bsp
   private type ProtocolError = JsonRpcResponse.Error
   private type BspResponse[T] = Either[ProtocolError, T]
@@ -411,9 +454,8 @@ final class BloopBspServices(
         false,
         cancelCompilation,
         bspLogger,
-        // TODO: make this work via hacking bsp messages@@
-        remoteCompileHandle = RemoteCompileHandle(remoteCompiler = None))
-    }
+        remoteCompileHandle = RemoteCompileHandle(remoteCompiler = Some(
+          BloopHackedRemoteCompileProtocolOverBSP(runningRemoteCompiles, ioScheduler)(client))))}
 
     val projects: List[Project] = {
       val projects0 = Dag.reduce(state.build.dags, userProjects.map(_._2).toSet).toList
@@ -657,8 +699,23 @@ final class BloopBspServices(
   }
 
   def run(params: bsp.RunParams): BspEndpointResponse[bsp.RunResult] = {
-    def parseMainClass(project: Project, state: State): Either[Exception, bsp.ScalaMainClass] = {
+    def parseMainClassOrRemoteCompile(project: Project, state: State): Either[Exception, bsp.ScalaMainClass] = {
       params.dataKind match {
+        case Some("pants-hacked-remote-compile-result") =>
+          bspLogger.info("WE GOT SOMETHING!!!")
+          val mapping = params.data.get.asObject.get
+          val sources = mapping("sources").get.as[Seq[String]].right.get
+          val req = RemoteCompileInput(sources = sources.map(AbsolutePath(_)))
+
+          val classesDir = mapping("classes_dir").get.as[String].right.get
+          val result = RemoteCompileOutput(classesDir = AbsolutePath(classesDir))
+
+          val p = Option(runningRemoteCompiles.get(req)).get
+          p.success(result)
+
+          bspLogger.info(s"completed promise for $result for request $req")
+
+          return Right(bsp.RunResult(None, bsp.StatusCode.Ok))
         case Some(bsp.RunParamsDataKind.ScalaMainClass) =>
           params.data match {
             case None =>
@@ -687,7 +744,7 @@ final class BloopBspServices(
       import bloop.engine.tasks.LinkTask.{linkMainWithJs, linkMainWithNative}
       val cwd = state.commonOptions.workingPath
 
-      parseMainClass(project, state) match {
+      parseMainClassOrRemoteCompile(project, state) match {
         case Left(error) =>
           Task.now(sys.error(s"Failed to run main class in $project due to: ${error.getMessage}"))
         case Right(mainClass) =>
