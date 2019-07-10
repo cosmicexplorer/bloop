@@ -463,7 +463,9 @@ final class BloopBspServices(
         cancelCompilation,
         bspLogger,
         remoteCompileHandle = RemoteCompileHandle(remoteCompiler = Some(
-          BloopHackedRemoteCompileProtocolOverBSP(runningRemoteCompiles, ioScheduler)(client))))}
+          BloopHackedRemoteCompileProtocolOverBSP(runningRemoteCompiles, ioScheduler)(client))),
+        rscCompatibleTargets = targetMapping
+      )}
 
     val projects: List[Project] = {
       val projects0 = Dag.reduce(state.build.dags, userProjects.map(_._2).toSet).toList

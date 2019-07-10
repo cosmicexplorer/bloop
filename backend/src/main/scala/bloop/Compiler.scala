@@ -76,7 +76,8 @@ case class CompileInputs(
     ioExecutor: Executor,
     invalidatedClassFilesInDependentProjects: Set[File],
     generatedClassFilePathsInDependentProjects: Map[String, File],
-    remoteCompileHandle: RemoteCompileHandle
+    remoteCompileHandle: RemoteCompileHandle = RemoteCompileHandle.empty,
+    rscCompatibleTargets: Map[String, String] = Map.empty
 )
 
 case class CompileOutPaths(

@@ -52,7 +52,8 @@ object CompileTask {
       excludeRoot: Boolean,
       cancelCompilation: Promise[Unit],
       rawLogger: UseSiteLogger,
-      remoteCompileHandle: RemoteCompileHandle
+      remoteCompileHandle: RemoteCompileHandle = RemoteCompileHandle.empty,
+      rscCompatibleTargets: Map[String, String] = Map.empty
   ): Task[State] = {
     import bloop.data.ClientInfo
     import bloop.internal.build.BuildInfo
@@ -160,7 +161,8 @@ object CompileTask {
               ExecutionContext.ioExecutor,
               bundle.dependenciesData.allInvalidatedClassFiles,
               bundle.dependenciesData.allGeneratedClassFilePaths,
-              remoteCompileHandle
+              remoteCompileHandle,
+              rscCompatibleTargets = rscCompatibleTargets
             )
           }
 
@@ -258,7 +260,7 @@ object CompileTask {
     }
 
     val client = state.client
-    CompileGraph.traverse(dag, client, setup(_), compile(_), pipeline).flatMap { partialDag =>
+    CompileGraph.traverse(dag, client, setup(_), compile(_), pipeline, rscCompatibleTargets).flatMap { partialDag =>
       val partialResults = Dag.dfs(partialDag)
       val finalResults = partialResults.map(r => PartialCompileResult.toFinalResult(r))
       Task.gatherUnordered(finalResults).map(_.flatten).flatMap { results =>

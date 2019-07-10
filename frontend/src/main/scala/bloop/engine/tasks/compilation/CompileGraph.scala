@@ -74,13 +74,14 @@ object CompileGraph {
       client: ClientInfo,
       setup: BundleInputs => Task[CompileBundle],
       compile: Inputs => Task[ResultBundle],
-      pipeline: Boolean
+      pipeline: Boolean,
+      rscCompatibleTargets: Map[String, String] = Map.empty
   ): CompileTraversal = {
     /* We use different traversals for normal and pipeline compilation because the
      * pipeline traversal has an small overhead (2-3%) for some projects. Check
      * https://benchs.scala-lang.org/dashboard/snapshot/sLrZTBfntTxMWiXJPtIa4DIrmT0QebYF */
     if (pipeline) pipelineTraversal(dag, client, setup, compile)
-    else normalTraversal(dag, client, setup, compile)
+    else normalTraversal(dag, client, setup, compile, rscCompatibleTargets = rscCompatibleTargets)
   }
 
   private final val JavaContinue = Task.now(JavaSignal.ContinueCompilation)
@@ -619,7 +620,8 @@ object CompileGraph {
       dag: Dag[Project],
       client: ClientInfo,
       computeBundle: BundleInputs => Task[CompileBundle],
-      compile: Inputs => Task[ResultBundle]
+      compile: Inputs => Task[ResultBundle],
+      rscCompatibleTargets: Map[String, String] = Map.empty
   ): CompileTraversal = {
     val tasks = new mutable.HashMap[Dag[Project], CompileTraversal]()
     def register(k: Dag[Project], v: CompileTraversal): CompileTraversal = { tasks.put(k, v); v }
@@ -658,48 +660,73 @@ object CompileGraph {
                 Task.now(Parent(PartialEmpty, dagResults))
               }
 
+            // NB: Rsc is taking the place of pipelining in some sense, so we only look at hooking
+            // into the non-pipelined `normalTraversal()` method (for now)!
             case Parent(project, dependencies) =>
+              // TODO: kick off rsc compiles of all of the non-macro targets (have to pipe in which
+              // targets define/use macros!!) and use that for the classpath.
+              // TODO: ensure rsc uses symbol index cache from warp when invoked!!!!!!!!
+              // TODO: `rsc.classpath.Classpath.go()` will do all the necessary things to
+              // concurrently populate its classpath!!!!!
               val downstream = dependencies.map(loop)
               Task.gatherUnordered(downstream).flatMap { dagResults =>
-                val failed = dagResults.flatMap(dag => blockedBy(dag).toList)
-                if (failed.nonEmpty) {
+                val remainingDeps = dagResults.flatMap(dag => blockedBy(dag).toList)
+
+                val (outlineable, blocking) = remainingDeps.partition { project =>
+                  rscCompatibleTargets.get(project.name) match {
+                    case Some("rsc-and-zinc") => false // true
+                    case Some("zinc-java") => false
+                    case Some("zinc-only") => false
+                    case Some(x) => throw new Exception(s"unrecognized rsc compatibility: $x")
+                    case None => false
+                  }
+                }
+
+                // NB: currently, we will only invoke rsc if that allows us to kick off a compile.
+                if (blocking.nonEmpty) {
                   // Register the name of the projects we're blocked on (intransitively)
-                  val blockedResult = Compiler.Result.Blocked(failed.map(_.name))
+                  val blockedResult = Compiler.Result.Blocked(blocking.map(_.name))
                   val blocked = Task.now(ResultBundle(blockedResult, None))
-                  Task.now(Parent(PartialFailure(project, BlockURI, blocked), dagResults))
-                } else {
-                  val results: List[PartialSuccess] = {
-                    val transitive = dagResults.flatMap(Dag.dfs(_)).distinct
-                    transitive.collect { case s: PartialSuccess => s }
+                  return Task.now(Parent(PartialFailure(project, BlockURI, blocked), dagResults))
+                }
+
+                // If any dependencies haven't been compiled yet, but are rsc-able, populate the
+                // classpath for those targets with rsc outlines!
+                if (outlineable.nonEmpty) {
+                  // TODO: outline these!!! (mutable logic!!!)
+                }
+
+                val results: List[PartialSuccess] = {
+                  val transitive = dagResults.flatMap(Dag.dfs(_)).distinct
+                  transitive.collect { case s: PartialSuccess => s }
+                }
+
+                val projectResults =
+                  results.map(ps => ps.result.map(r => ps.bundle.project -> r))
+                Task.gatherUnordered(projectResults).flatMap { results =>
+                  var dependentProducts = new mutable.ListBuffer[(Project, BundleProducts)]()
+                  var dependentResults = new mutable.ListBuffer[(File, PreviousResult)]()
+                  results.foreach {
+                    case (p, ResultBundle(s: Compiler.Result.Success, _, _)) =>
+                      val newProducts = s.products
+                      dependentProducts.+=(p -> Right(newProducts))
+                      val newResult = newProducts.resultForDependentCompilationsInSameRun
+                      dependentResults
+                        .+=(newProducts.newClassesDir.toFile -> newResult)
+                        .+=(newProducts.readOnlyClassesDir.toFile -> newResult)
+                    case _ => ()
                   }
 
-                  val projectResults =
-                    results.map(ps => ps.result.map(r => ps.bundle.project -> r))
-                  Task.gatherUnordered(projectResults).flatMap { results =>
-                    var dependentProducts = new mutable.ListBuffer[(Project, BundleProducts)]()
-                    var dependentResults = new mutable.ListBuffer[(File, PreviousResult)]()
-                    results.foreach {
-                      case (p, ResultBundle(s: Compiler.Result.Success, _, _)) =>
-                        val newProducts = s.products
-                        dependentProducts.+=(p -> Right(newProducts))
-                        val newResult = newProducts.resultForDependentCompilationsInSameRun
-                        dependentResults
-                          .+=(newProducts.newClassesDir.toFile -> newResult)
-                          .+=(newProducts.readOnlyClassesDir.toFile -> newResult)
-                      case _ => ()
-                    }
-
-                    val resultsMap = dependentResults.toMap
-                    val bundleInputs = BundleInputs(project, dag, dependentProducts.toMap)
-                    setupAndDeduplicate(client, bundleInputs, computeBundle) { bundle =>
-                      val oracle = new SimpleOracle
-                      val inputs = Inputs(bundle, oracle, None, resultsMap)
-                      compile(inputs).map { results =>
-                        results.fromCompiler match {
-                          case Compiler.Result.Ok(_) =>
-                            Parent(partialSuccess(bundle, results), dagResults)
-                          case res => Parent(toPartialFailure(bundle, results), dagResults)
-                        }
+                  val resultsMap = dependentResults.toMap
+                  val bundleInputs = BundleInputs(project, dag, dependentProducts.toMap)
+                  setupAndDeduplicate(client, bundleInputs, computeBundle) { bundle =>
+                    val oracle = new SimpleOracle
+                    val inputs = Inputs(bundle, oracle, None, resultsMap)
+                    compile(inputs).map { results =>
+                      results.fromCompiler match {
+                        case Compiler.Result.Ok(_) =>
+                          Parent(partialSuccess(bundle, results), dagResults)
+                        case res => Parent(toPartialFailure(bundle, results), dagResults)
                       }
                     }
                   }
@@ -781,11 +808,6 @@ object CompileGraph {
               }
 
             case Parent(project, dependencies) =>
-              // TODO: kick off rsc compiles of all of the non-macro targets (have to pipe in which
-              // targets define/use macros!!) and use that for the classpath.
-              // TODO: ensure rsc uses symbol index cache from warp when invoked!!!!!!!!
-              // TODO: `rsc.classpath.Classpath.go()` will do all the necessary things to
-              // concurrently populate its classpath!!!!!
               val downstream = dependencies.map(loop)
               Task.gatherUnordered(downstream).flatMap { dagResults =>
                 val failed = dagResults.flatMap(dag => blockedBy(dag).toList)
