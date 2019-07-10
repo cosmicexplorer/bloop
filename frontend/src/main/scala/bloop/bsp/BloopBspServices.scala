@@ -107,6 +107,8 @@ final class BloopBspServices(
 ) {
   val runningRemoteCompiles = new ConcurrentHashMap[RemoteCompileInput, Promise[RemoteCompileOutput]]()
 
+  var targetMapping: Map[String, String] = null
+
   private implicit val debugFilter: DebugFilter = DebugFilter.Bsp
   private type ProtocolError = JsonRpcResponse.Error
   private type BspResponse[T] = Either[ProtocolError, T]
@@ -302,6 +304,12 @@ final class BloopBspServices(
       out = fileOut
     )
 
+    val retData: Option[Json] = params.data
+      .map(_.as[Map[String, String]].right.get).map { mapping =>
+        targetMapping = mapping
+        Map("received_target_mapping" -> true).asJson
+      }
+
     reloadState(configDir, client, metalsSettings, bspLogger).map { state =>
       callSiteState.logger.info("request received: build/initialize")
       clientInfo.success(client)
@@ -321,7 +329,7 @@ final class BloopBspServices(
             resourcesProvider = Some(true),
             buildTargetChangedProvider = Some(false)
           ),
-          data = None,
+          data = retData,
         )
       )
     }
