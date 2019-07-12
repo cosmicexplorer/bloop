@@ -27,8 +27,7 @@ import monix.execution.atomic.AtomicBoolean
 import monix.reactive.{Observable, MulticastStrategy}
 import xsbti.compile.PreviousResult
 
-import rsc.classpath.Classpath
-
+import scala.concurrent.duration._
 import scala.concurrent.Promise
 import scala.util.{Failure, Success}
 import xsbti.compile.Signature
@@ -37,6 +36,7 @@ import java.{util => ju}
 
 object CompileGraph {
   type CompileTraversal = Task[Dag[PartialCompileResult]]
+
   private implicit val filter: DebugFilter = DebugFilter.Compilation
 
   type BundleProducts = Either[PartialCompileProducts, CompileProducts]
@@ -75,13 +75,15 @@ object CompileGraph {
       setup: BundleInputs => Task[CompileBundle],
       compile: Inputs => Task[ResultBundle],
       pipeline: Boolean,
-      rscCompatibleTargets: Map[String, String] = Map.empty
+      logger: Logger,
+      rscCompatibleTargets: Map[String, String] = Map.empty,
+      missingProjects: (Project => List[RscIndex.ProjectName]) = (_ => Nil)
   ): CompileTraversal = {
     /* We use different traversals for normal and pipeline compilation because the
      * pipeline traversal has an small overhead (2-3%) for some projects. Check
      * https://benchs.scala-lang.org/dashboard/snapshot/sLrZTBfntTxMWiXJPtIa4DIrmT0QebYF */
     if (pipeline) pipelineTraversal(dag, client, setup, compile)
-    else normalTraversal(dag, client, setup, compile, rscCompatibleTargets = rscCompatibleTargets)
+    else normalTraversal(dag, client, setup, compile, logger, rscCompatibleTargets, missingProjects)
   }
 
   private final val JavaContinue = Task.now(JavaSignal.ContinueCompilation)
@@ -95,18 +97,23 @@ object CompileGraph {
         case result :: rest =>
           result match {
             case PartialEmpty => None
+            case _: RscPartialSuccess => None
             case _: PartialSuccess => None
             case f: PartialFailure => Some(f.project)
+            // TODO: What does `blockedFromResults(results)` do? It looks like an infinite loop
+            // tail call, yet no infinite looping has been observed.
             case fs: PartialFailures => blockedFromResults(results)
           }
       }
     }
 
     dag match {
+      case Leaf(_: RscPartialSuccess) => None
       case Leaf(_: PartialSuccess) => None
       case Leaf(f: PartialFailure) => Some(f.project)
       case Leaf(fs: PartialFailures) => blockedFromResults(fs.failures)
       case Leaf(PartialEmpty) => None
+      case Parent(_: RscPartialSuccess, _) => None
       case Parent(_: PartialSuccess, _) => None
       case Parent(f: PartialFailure, _) => Some(f.project)
       case Parent(fs: PartialFailures, _) => blockedFromResults(fs.failures)
@@ -124,7 +131,7 @@ object CompileGraph {
   }
 
   private[bloop] final case class RunningCompilation(
-      traversal: CompileTraversal,
+      traversal: Task[BackgroundNonRscCompileTaskResult],
       previousLastSuccessful: LastSuccessfulResult,
       isUnsubscribed: AtomicBoolean,
       mirror: Observable[Either[ReporterAction, LoggerAction]],
@@ -179,10 +186,10 @@ object CompileGraph {
       inputs: BundleInputs,
       setup: BundleInputs => Task[CompileBundle]
   )(
-      compile: CompileBundle => CompileTraversal
-  ): CompileTraversal = {
+      compile: CompileBundle => Task[BackgroundNonRscCompileTaskResult]
+  ): Task[BackgroundNonRscCompileTaskResult] = {
     implicit val filter = DebugFilter.Compilation
-    def withBundle(f: CompileBundle => CompileTraversal): CompileTraversal = {
+    def withBundle(f: CompileBundle => Task[BackgroundNonRscCompileTaskResult]): Task[BackgroundNonRscCompileTaskResult] = {
       setup(inputs).materialize.flatMap {
         case Success(bundle) => f(bundle)
         case Failure(t) =>
@@ -191,7 +198,9 @@ object CompileGraph {
             s"Unexpected exception when computing compile inputs ${t.getMessage()}"
           )
           val failed = Task.now(ResultBundle(failedResult, None))
-          Task.now(Leaf(PartialFailure(inputs.project, FailedOrCancelledPromise, failed)))
+          val res = PartialFailure(inputs.project, FailedOrCancelledPromise, failed)
+          val node = Leaf(res)
+          Task.now(BackgroundNonRscCompileTaskResult(res, node))
       }
     }
 
@@ -292,7 +301,7 @@ object CompileGraph {
          * when the full compilation of a module is finished.
          */
         val obtainResultFromDeduplication = ongoingCompilationTask.map { resultDag =>
-          enrichResultDag(resultDag) {
+          resultDag.copy(dag = enrichResultDag(resultDag.dag) {
             case s @ PartialSuccess(bundle, _, compilerResult) =>
               val newCompilerResult = compilerResult.flatMap { results =>
                 results.fromCompiler match {
@@ -312,7 +321,7 @@ object CompileGraph {
               }
               s.copy(result = newCompilerResult)
             case result => result
-          }
+          })
         }
 
         val compileAndDeduplicate = Task
@@ -342,14 +351,14 @@ object CompileGraph {
                  * client compilation was not successfully deduplicated.
                  */
                 Task.fromFuture(compilationFuture).map { resultDag =>
-                  enrichResultDag(resultDag) { (p: PartialCompileResult) =>
+                  resultDag.copy(dag = enrichResultDag(resultDag.dag) { (p: PartialCompileResult) =>
                     p match {
                       case s: PartialSuccess =>
                         val failedBundle = ResultBundle(failedDeduplicationResult, None)
                         s.copy(result = s.result.map(_ => failedBundle))
                       case result => result
                     }
-                  }
+                  })
                 }
 
               case DeduplicationResult.DisconnectFromDeduplication =>
@@ -400,7 +409,7 @@ object CompileGraph {
       inputs: BundleInputs,
       bundle: CompileBundle,
       client: ClientInfo,
-      compile: CompileBundle => CompileTraversal
+      compile: CompileBundle => Task[BackgroundNonRscCompileTaskResult]
   ): RunningCompilation = {
     import inputs.project
     import bundle.logger
@@ -444,14 +453,14 @@ object CompileGraph {
         .doOnFinish(_ => Task(logger.observer.onComplete()))
         .map { result =>
           // Unregister deduplication atomically and register last successful if any
-          processResultAtomically(
-            result,
+          result.copy(dag = processResultAtomically(
+            result.dag,
             project,
             bundle.uniqueInputs,
             mostRecentSuccessful,
             isUnsubscribed,
             logger
-          )
+          ))
         }
         .memoize // Without memoization, there is no deduplication
     }
@@ -621,8 +630,12 @@ object CompileGraph {
       client: ClientInfo,
       computeBundle: BundleInputs => Task[CompileBundle],
       compile: Inputs => Task[ResultBundle],
-      rscCompatibleTargets: Map[String, String] = Map.empty
+      logger: Logger,
+      rscCompatibleTargets: Map[String, String],
+      missingProjects: (Project => List[RscIndex.ProjectName])
   ): CompileTraversal = {
+    implicit val _logger: Logger = logger
+
     val tasks = new mutable.HashMap[Dag[Project], CompileTraversal]()
     def register(k: Dag[Project], v: CompileTraversal): CompileTraversal = { tasks.put(k, v); v }
 
@@ -637,22 +650,91 @@ object CompileGraph {
       PartialFailure(bundle.project, FailedOrCancelledPromise, Task.now(results))
     }
 
+    def maybeRscCompile(
+      project: Project,
+      dag: Dag[Project],
+      dependentProducts: Map[Project, BundleProducts],
+      dependentResults: Map[File, PreviousResult],
+    )(newGraph: PartialCompileResult => Dag[PartialCompileResult]): CompileTraversal = {
+
+      Dag.dfs(dag).distinct
+        .flatMap(missingProjects(_))
+        .map(p => RscIndex.ProjectName(p.name)).foreach { name =>
+          RscIndex.registerMissing(name)
+          logger.info(s"registered missing project $name!")
+        }
+
+      def bundleAndCompile(raiseOnFailure: Boolean): Task[BackgroundNonRscCompileTaskResult] = {
+        val bundleInputs = BundleInputs(project, dag, dependentProducts)
+        setupAndDeduplicate(client, bundleInputs, computeBundle) { bundle =>
+          val oracle = new SimpleOracle
+          val inputs = Inputs(bundle, oracle, None, dependentResults)
+          val compileResult = compile(inputs).map { results =>
+            results.fromCompiler match {
+              case Compiler.Result.Ok(x) =>
+                x match {
+                  case s: Compiler.Result.Success => RscIndex.registerCompiled(project, s)
+                  case _ => ()
+                }
+                partialSuccess(bundle, results)
+              case _ => if (raiseOnFailure) {
+                throw new Exception(s"scalac bundle and compile failed: $bundle, $results")
+              } else toPartialFailure(bundle, results)
+            }
+          }
+          compileResult.map(r => BackgroundNonRscCompileTaskResult(r, newGraph(r)))
+        }
+      }
+
+      def zincOnlyCompile(): CompileTraversal = bundleAndCompile(raiseOnFailure = false).map(_.dag)
+
+      val compileTask = rscCompatibleTargets.get(project.name) match {
+        case Some("rsc-and-zinc") =>
+          val outlineTask = RscIndex.outline(project)
+            // .timeoutTo(10.seconds, Task.raiseError[RscCompileOutput](
+            //   new Exception(s"timeout for rsc outline of project $project")))
+          val scalacTask = bundleAndCompile(raiseOnFailure = true)
+          Task.chooseFirstOf(outlineTask, scalacTask)
+            .map {
+              case Left((rscOutline, scalacCompileFuture)) =>
+                logger.info(s"rsc outline completed first for project $project")
+                val output = Compiler.Result.RscSuccess(rscOutline.asProducts)
+                val result = ResultBundle(
+                  fromCompiler = output,
+                  successful = None,
+                  runningBackgroundTasks = CancelableFuture.unit,
+                  // TODO: make this an Option[CancelableFuture[_]] instead?
+                  realCompilationTask = Some(Task.fromFuture(scalacCompileFuture)))
+                newGraph(RscPartialSuccess(project, Task.now(result)))
+              // If the scalac compile beats out the rsc compile (unlikely), just take the scalac
+              // compile.
+              case Right((rscFuture, scalacOutput)) =>
+                logger.warn(s"scalac output completed first for project $project")
+                rscFuture.cancel()
+                scalacOutput.dag
+            }
+        case Some("zinc-java") => zincOnlyCompile()
+        case Some("zinc-only") => zincOnlyCompile()
+        case None => zincOnlyCompile()
+        case Some(x) => throw new Exception(s"unrecognized rsc compatibility: $x")
+      }
+      compileTask
+        .onErrorHandle {
+          case e =>
+            logger.trace(e)
+            logger.error(e.toString)
+            throw e
+        }
+    }
+
     def loop(dag: Dag[Project]): CompileTraversal = {
       tasks.get(dag) match {
         case Some(task) => task
         case None =>
           val task: Task[Dag[PartialCompileResult]] = dag match {
-            case Leaf(project) =>
-              val bundleInputs = BundleInputs(project, dag, Map.empty)
-              setupAndDeduplicate(client, bundleInputs, computeBundle) { bundle =>
-                val oracle = new SimpleOracle
-                compile(Inputs(bundle, oracle, None, Map.empty)).map { results =>
-                  results.fromCompiler match {
-                    case Compiler.Result.Ok(_) => Leaf(partialSuccess(bundle, results))
-                    case _ => Leaf(toPartialFailure(bundle, results))
-                  }
-                }
-              }
+            case Leaf(project) => maybeRscCompile(project, dag, Map.empty, Map.empty) {
+              res => Leaf(res)
+            }
 
             case Aggregate(dags) =>
               val downstream = dags.map(loop)
@@ -663,26 +745,13 @@ object CompileGraph {
             // NB: Rsc is taking the place of pipelining in some sense, so we only look at hooking
             // into the non-pipelined `normalTraversal()` method (for now)!
             case Parent(project, dependencies) =>
-              // TODO: kick off rsc compiles of all of the non-macro targets (have to pipe in which
-              // targets define/use macros!!) and use that for the classpath.
-              // TODO: ensure rsc uses symbol index cache from warp when invoked!!!!!!!!
-              // TODO: `rsc.classpath.Classpath.go()` will do all the necessary things to
-              // concurrently populate its classpath!!!!!
+              // FIXME: move `outlineable` calculation out of the flatMap -- the rsc compiles of
+              // dependencies need to be kicked off *before* the dependencies of the current
+              // target!!!
               val downstream = dependencies.map(loop)
               Task.gatherUnordered(downstream).flatMap { dagResults =>
-                val remainingDeps = dagResults.flatMap(dag => blockedBy(dag).toList)
+                val blocking = dagResults.flatMap(dag => blockedBy(dag).toList)
 
-                val (outlineable, blocking) = remainingDeps.partition { project =>
-                  rscCompatibleTargets.get(project.name) match {
-                    case Some("rsc-and-zinc") => false // true
-                    case Some("zinc-java") => false
-                    case Some("zinc-only") => false
-                    case Some(x) => throw new Exception(s"unrecognized rsc compatibility: $x")
-                    case None => false
-                  }
-                }
-
-                // NB: currently, we will only invoke rsc if that allows us to kick off a compile.
                 if (blocking.nonEmpty) {
                   // Register the name of the projects we're blocked on (intransitively)
                   val blockedResult = Compiler.Result.Blocked(blocking.map(_.name))
@@ -690,24 +759,20 @@ object CompileGraph {
                   return Task.now(Parent(PartialFailure(project, BlockURI, blocked), dagResults))
                 }
 
-                // If any dependencies haven't been compiled yet, but are rsc-able, populate the
-                // classpath for those targets with rsc outlines!
-                if (outlineable.nonEmpty) {
-                  // TODO: outline these!!! (mutable logic!!!)
-                }
-
-                val results: List[PartialSuccess] = {
+                val projectResults: Seq[Task[(Project, ResultBundle)]] = {
                   val transitive = dagResults.flatMap(Dag.dfs(_)).distinct
-                  transitive.collect { case s: PartialSuccess => s }
+                  transitive.collect {
+                    case PartialSuccess(bundle, _, result) => result.map(r => (bundle.project -> r))
+                    case RscPartialSuccess(project, result) => result.map(r => (project -> r))
+                  }
                 }
 
-                val projectResults =
-                  results.map(ps => ps.result.map(r => ps.bundle.project -> r))
                 Task.gatherUnordered(projectResults).flatMap { results =>
                   var dependentProducts = new mutable.ListBuffer[(Project, BundleProducts)]()
                   var dependentResults = new mutable.ListBuffer[(File, PreviousResult)]()
+
                   results.foreach {
-                    case (p, ResultBundle(s: Compiler.Result.Success, _, _)) =>
+                    case (p, ResultBundle(s: Compiler.Result.Success, _, _, _)) =>
                       val newProducts = s.products
                       dependentProducts.+=(p -> Right(newProducts))
                       val newResult = newProducts.resultForDependentCompilationsInSameRun
@@ -717,18 +782,8 @@ object CompileGraph {
                     case _ => ()
                   }
 
-                  val resultsMap = dependentResults.toMap
-                  val bundleInputs = BundleInputs(project, dag, dependentProducts.toMap)
-                  setupAndDeduplicate(client, bundleInputs, computeBundle) { bundle =>
-                    val oracle = new SimpleOracle
-                    val inputs = Inputs(bundle, oracle, None, resultsMap)
-                    compile(inputs).map { results =>
-                      results.fromCompiler match {
-                        case Compiler.Result.Ok(_) =>
-                          Parent(partialSuccess(bundle, results), dagResults)
-                        case res => Parent(toPartialFailure(bundle, results), dagResults)
-                      }
-                    }
+                  maybeRscCompile(project, dag, dependentProducts.toMap, dependentResults.toMap) {
+                    res => Parent(res, dagResults)
                   }
                 }
               }
@@ -794,11 +849,11 @@ object CompileGraph {
                     .materialize
                     .map { upstream =>
                       val ms = oracle.collectDefinedMacroSymbols
-                      Leaf(
-                        PartialCompileResult(bundle, upstream, end, jcf, completeJava, ms, running)
-                      )
+                      val res = PartialCompileResult(bundle, upstream, end, jcf, completeJava, ms, running)
+                      val node = Leaf(res)
+                      BackgroundNonRscCompileTaskResult(res, node)
                     }
-                }
+                }.map(_.dag)
               }
 
             case Aggregate(dags) =>
@@ -883,7 +938,7 @@ object CompileGraph {
                       var nonPipelinedDependentResults =
                         new mutable.ListBuffer[(File, PreviousResult)]()
                       nonPipelineResults.foreach {
-                        case (p, ResultBundle(s: Compiler.Result.Success, _, _)) =>
+                        case (p, ResultBundle(s: Compiler.Result.Success, _, _, _)) =>
                           val newProducts = s.products
                           nonPipelinedDependentProducts.+=(p -> Right(newProducts))
                           val newResult = newProducts.resultForDependentCompilationsInSameRun
@@ -942,13 +997,12 @@ object CompileGraph {
                             .materialize
                             .map { upstream =>
                               val ms = oracle.collectDefinedMacroSymbols
-                              Parent(
-                                PartialCompileResult(bundle, upstream, end, jf, cj, ms, ongoing),
-                                dagResults
-                              )
+                              val res = PartialCompileResult(bundle, upstream, end, jf, cj, ms, ongoing)
+                              val node = Parent(res, dagResults)
+                              BackgroundNonRscCompileTaskResult(res, node)
                             }
                         }
-                      }
+                      }.map(_.dag)
                     }
                   }
                 }

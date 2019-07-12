@@ -62,6 +62,9 @@ object PartialCompileResult {
         Task.gatherUnordered(failures.map(toFinalResult(_))).map(_.flatten)
       case PartialSuccess(bundle, _, result) =>
         result.map(res => FinalNormalCompileResult(bundle.project, res) :: Nil)
+      case RscPartialSuccess(project, result) => result
+          .flatMap(_.realCompilationTask.get)
+          .flatMap(r => toFinalResult(r.result))
     }
   }
 }
@@ -87,6 +90,12 @@ case class PartialFailures(
 case class PartialSuccess(
     bundle: CompileBundle,
     pipeliningResults: Option[PipelineResults],
+    result: Task[ResultBundle]
+) extends PartialCompileResult
+    with CacheHashCode
+
+case class RscPartialSuccess(
+    project: Project,
     result: Task[ResultBundle]
 ) extends PartialCompileResult
     with CacheHashCode

@@ -259,8 +259,12 @@ object CompileTask {
       CompileBundle.computeFrom(inputs, dir, reporter, last, prev, cancel, logger, obs, t)
     }
 
+    def missing(project: Project): List[RscIndex.ProjectName] = state.build.hasMissingDependencies(project)
+      .getOrElse(Nil)
+      .map(RscIndex.ProjectName(_))
+
     val client = state.client
-    CompileGraph.traverse(dag, client, setup(_), compile(_), pipeline, rscCompatibleTargets).flatMap { partialDag =>
+    CompileGraph.traverse(dag, client, setup(_), compile(_), pipeline, rawLogger, rscCompatibleTargets, missing).flatMap { partialDag =>
       val partialResults = Dag.dfs(partialDag)
       val finalResults = partialResults.map(r => PartialCompileResult.toFinalResult(r))
       Task.gatherUnordered(finalResults).map(_.flatten).flatMap { results =>
@@ -319,14 +323,15 @@ object CompileTask {
           }
         }
 
-        val backgroundTasks = Task.sequence {
-          results.flatMap {
+        val backgroundTasks: Task[Unit] = {
+          val allTasks: List[Task[Unit]] = results.flatMap {
             case FinalNormalCompileResult(_, results) =>
               val tasksAtEndOfBuildCompilation =
                 Task.fromFuture(results.runningBackgroundTasks)
-              List(tasksAtEndOfBuildCompilation)
+              List(tasksAtEndOfBuildCompilation) ++ results.realCompilationTask.map(_.map(_ => ())).toList
             case _ => Nil
           }
+          Task.gatherUnordered(allTasks).map(_ => ())
         }
 
         // Block on all background task operations to fully populate classes directories

@@ -6,10 +6,10 @@ import scalaz.Show
 import scala.collection.mutable.ListBuffer
 import scala.collection.mutable
 
-sealed trait Dag[T]
-final case class Leaf[T](value: T) extends Dag[T] with CacheHashCode
-final case class Parent[T](value: T, children: List[Dag[T]]) extends Dag[T] with CacheHashCode
-final case class Aggregate[T](dags: List[Dag[T]]) extends Dag[T] with CacheHashCode
+sealed trait Dag[+T]
+final case class Leaf[+T](value: T) extends Dag[T] with CacheHashCode
+final case class Parent[+T](value: T, children: List[Dag[T]]) extends Dag[T] with CacheHashCode
+final case class Aggregate[+T](dags: List[Dag[T]]) extends Dag[T] with CacheHashCode
 
 object Dag {
   case class RecursiveTrace(visited: List[Project])

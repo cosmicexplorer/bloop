@@ -190,6 +190,11 @@ object Compiler {
     ) extends Result
         with CacheHashCode
 
+    final case class RscSuccess(
+        products: CompileProducts
+    ) extends Result
+        with CacheHashCode
+
     final case class Failed(
         problems: List[ProblemPerPhase],
         t: Option[Throwable],
@@ -207,7 +212,7 @@ object Compiler {
 
     object Ok {
       def unapply(result: Result): Option[Result] = result match {
-        case s @ (Success(_, _, _, _, _, _, _) | Empty) => Some(s)
+        case s @ (RscSuccess(_) | Success(_, _, _, _, _, _) | Empty) => Some(s)
         case _ => None
       }
     }
@@ -371,11 +376,11 @@ object Compiler {
         remoteCompiler
           .requestRemoteCompile(remoteInputs)
           .map { resp =>
-            logger.info(s"wow: $resp")
+            logger.info(s"remote compile complete: $resp for input $remoteInputs")
             ()
           }
           .timeoutTo(3.seconds, Task.eval {
-            logger.info(s"timed out for $remoteInputs")
+            logger.warn(s"remote compile request timed out for $remoteInputs!!!")
             ()
           })
       }
