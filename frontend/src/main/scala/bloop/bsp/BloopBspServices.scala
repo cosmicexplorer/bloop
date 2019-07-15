@@ -24,6 +24,9 @@ import bloop.dap.{DebugServer, DebuggeeRunner, StartedDebugServer}
 import bloop.data.{ClientInfo, Platform, Project}
 import bloop.engine.{State, Aggregate, Dag, Interpreter}
 import bloop.engine.tasks.{CompileTask, Tasks, TestTask, RunMode}
+import bloop.data.{Platform, Project, ClientInfo}
+import bloop.engine.tasks.{CompileTask, Tasks, TestTask}
+import bloop.engine.tasks.compilation.RscIndex
 import bloop.engine.tasks.toolchains.{ScalaJsToolchain, ScalaNativeToolchain}
 import bloop.exec.JavaEnv
 import bloop.internal.build.BuildInfo
@@ -107,7 +110,7 @@ final class BloopBspServices(
 ) {
   val runningRemoteCompiles = new ConcurrentHashMap[RemoteCompileInput, Promise[RemoteCompileOutput]]()
 
-  var targetMapping: Map[String, String] = null
+  var targetMapping: RscIndex = null
 
   private implicit val debugFilter: DebugFilter = DebugFilter.Bsp
   private type ProtocolError = JsonRpcResponse.Error
@@ -305,8 +308,15 @@ final class BloopBspServices(
     )
 
     val retData: Option[Json] = params.data
-      .map(_.as[Map[String, String]].right.get).map { mapping =>
-        targetMapping = mapping
+      .map(_.as[Map[String, (String, Seq[String])]].right.get).map { mapping =>
+        assert(targetMapping == null)
+        val rscIndex = RscIndex.parse(mapping)
+        targetMapping = rscIndex
+        // NB: kicks off a background thread to display the status of promises!!!
+        Task(bspLogger.info(s"running promises:\n${rscIndex.displayRunningPromisesSummary}"))
+          .delayExecution(FiniteDuration(10, TimeUnit.SECONDS))
+          .restartUntil(_ => false)
+          .runAsync(ioScheduler)
         Map("received_target_mapping" -> true).asJson
       }
 
@@ -464,7 +474,7 @@ final class BloopBspServices(
         bspLogger,
         remoteCompileHandle = RemoteCompileHandle(remoteCompiler = Some(
           BloopHackedRemoteCompileProtocolOverBSP(runningRemoteCompiles, ioScheduler)(client))),
-        rscCompatibleTargets = targetMapping
+        rscCompatibleTargets = Some(targetMapping)
       )}
 
     val projects: List[Project] = {
@@ -483,6 +493,7 @@ final class BloopBspServices(
             case Compiler.Result.Success(_, _, _, _, _, _, _) =>
               previouslyFailedCompilations.remove(p)
               Nil
+            case Compiler.Result.RscSuccess(_) => Nil
             case Compiler.Result.GlobalError(problem) => List(problem)
             case Compiler.Result.Cancelled(problems, elapsed, _) =>
               List(reportError(p, problems, elapsed))

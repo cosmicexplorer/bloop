@@ -8,7 +8,10 @@ import bloop.{
   CompileProducts,
   CompileBackgroundTasks,
   CompileExceptions,
-  RemoteCompileHandle
+  RemoteCompileHandle,
+  RscCompiler,
+  RscProjectName,
+  RscTargetInfo
 }
 import bloop.cli.ExitStatus
 import bloop.data.Project
@@ -53,7 +56,7 @@ object CompileTask {
       cancelCompilation: Promise[Unit],
       rawLogger: UseSiteLogger,
       remoteCompileHandle: RemoteCompileHandle = RemoteCompileHandle.empty,
-      rscCompatibleTargets: Map[String, String] = Map.empty
+      rscCompatibleTargets: Option[RscCompiler] = None
   ): Task[State] = {
     import bloop.data.ClientInfo
     import bloop.internal.build.BuildInfo
@@ -259,9 +262,9 @@ object CompileTask {
       CompileBundle.computeFrom(inputs, dir, reporter, last, prev, cancel, logger, obs, t)
     }
 
-    def missing(project: Project): List[RscIndex.ProjectName] = state.build.hasMissingDependencies(project)
+    def missing(project: Project): List[RscProjectName] = state.build.hasMissingDependencies(project)
       .getOrElse(Nil)
-      .map(RscIndex.ProjectName(_))
+      .map(RscProjectName(_))
 
     val client = state.client
     CompileGraph.traverse(dag, client, setup(_), compile(_), pipeline, rawLogger, rscCompatibleTargets, missing).flatMap { partialDag =>

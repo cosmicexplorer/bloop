@@ -6,6 +6,7 @@ import java.nio.file.Path
 import java.util.concurrent.ConcurrentHashMap
 
 import ch.epfl.scala.bsp.StatusCode
+import bloop._
 import bloop.io.{ParallelOps, AbsolutePath, Paths => BloopPaths}
 import bloop.io.ParallelOps.CopyMode
 import bloop.data.{Project, ClientInfo}
@@ -15,7 +16,6 @@ import bloop.util.SystemProperties
 import bloop.engine.{Dag, Leaf, Parent, Aggregate, ExecutionContext}
 import bloop.reporter.ReporterAction
 import bloop.logging.{Logger, ObservedLogger, LoggerAction, DebugFilter}
-import bloop.{Compiler, CompilerOracle, JavaSignal, CompileProducts}
 import bloop.engine.caches.LastSuccessfulResult
 import bloop.UniqueCompileInputs
 import bloop.PartialCompileProducts
@@ -61,6 +61,9 @@ object CompileGraph {
       separateJavaAndScala: Boolean
   )
 
+  private def maybeGetRscIndex(rscCompatibleTargets: Option[RscCompiler]): Option[RscIndex] =
+    rscCompatibleTargets.map(_.asInstanceOf[RscIndex])
+
   /**
    * Turns a dag of projects into a task that returns a dag of compilation results
    * that can then be used to debug the evaluation of the compilation within Monix
@@ -76,8 +79,8 @@ object CompileGraph {
       compile: Inputs => Task[ResultBundle],
       pipeline: Boolean,
       logger: Logger,
-      rscCompatibleTargets: Map[String, String] = Map.empty,
-      missingProjects: (Project => List[RscIndex.ProjectName]) = (_ => Nil)
+      rscCompatibleTargets: Option[RscCompiler] = None,
+      missingProjects: (Project => List[RscProjectName]) = (_ => Nil)
   ): CompileTraversal = {
     /* We use different traversals for normal and pipeline compilation because the
      * pipeline traversal has an small overhead (2-3%) for some projects. Check
@@ -631,8 +634,8 @@ object CompileGraph {
       computeBundle: BundleInputs => Task[CompileBundle],
       compile: Inputs => Task[ResultBundle],
       logger: Logger,
-      rscCompatibleTargets: Map[String, String],
-      missingProjects: (Project => List[RscIndex.ProjectName])
+      rscCompatibleTargets: Option[RscCompiler],
+      missingProjects: (Project => List[RscProjectName])
   ): CompileTraversal = {
     implicit val _logger: Logger = logger
 
@@ -657,12 +660,14 @@ object CompileGraph {
       dependentResults: Map[File, PreviousResult],
     )(newGraph: PartialCompileResult => Dag[PartialCompileResult]): CompileTraversal = {
 
-      Dag.dfs(dag).distinct
-        .flatMap(missingProjects(_))
-        .map(p => RscIndex.ProjectName(p.name)).foreach { name =>
-          RscIndex.registerMissing(name)
-          logger.info(s"registered missing project $name!")
-        }
+      maybeGetRscIndex(rscCompatibleTargets).foreach { rscIndex =>
+        Dag.dfs(dag).distinct
+          .flatMap(missingProjects(_))
+          .map(p => RscProjectName(p.name)).foreach { name =>
+            rscIndex.registerMissing(name)
+            // logger.info(s"registered missing project $name!")
+          }
+      }
 
       def bundleAndCompile(raiseOnFailure: Boolean): Task[BackgroundNonRscCompileTaskResult] = {
         val bundleInputs = BundleInputs(project, dag, dependentProducts)
@@ -673,7 +678,10 @@ object CompileGraph {
             results.fromCompiler match {
               case Compiler.Result.Ok(x) =>
                 x match {
-                  case s: Compiler.Result.Success => RscIndex.registerCompiled(project, s)
+                  case s: Compiler.Result.Success => maybeGetRscIndex(rscCompatibleTargets)
+                      .foreach { rscIndex =>
+                        rscIndex.registerCompiled(project, s)
+                      }
                   case _ => ()
                 }
                 partialSuccess(bundle, results)
@@ -688,36 +696,30 @@ object CompileGraph {
 
       def zincOnlyCompile(): CompileTraversal = bundleAndCompile(raiseOnFailure = false).map(_.dag)
 
-      val compileTask = rscCompatibleTargets.get(project.name) match {
-        case Some("rsc-and-zinc") =>
-          val outlineTask = RscIndex.outline(project)
-            // .timeoutTo(10.seconds, Task.raiseError[RscCompileOutput](
-            //   new Exception(s"timeout for rsc outline of project $project")))
-          val scalacTask = bundleAndCompile(raiseOnFailure = true)
-          Task.chooseFirstOf(outlineTask, scalacTask)
-            .map {
-              case Left((rscOutline, scalacCompileFuture)) =>
-                logger.info(s"rsc outline completed first for project $project")
-                val output = Compiler.Result.RscSuccess(rscOutline.asProducts)
-                val result = ResultBundle(
-                  fromCompiler = output,
-                  successful = None,
-                  runningBackgroundTasks = CancelableFuture.unit,
-                  // TODO: make this an Option[CancelableFuture[_]] instead?
-                  realCompilationTask = Some(Task.fromFuture(scalacCompileFuture)))
-                newGraph(RscPartialSuccess(project, Task.now(result)))
-              // If the scalac compile beats out the rsc compile (unlikely), just take the scalac
-              // compile.
-              case Right((rscFuture, scalacOutput)) =>
-                logger.warn(s"scalac output completed first for project $project")
-                rscFuture.cancel()
-                scalacOutput.dag
-            }
-        case Some("zinc-java") => zincOnlyCompile()
-        case Some("zinc-only") => zincOnlyCompile()
-        case None => zincOnlyCompile()
-        case Some(x) => throw new Exception(s"unrecognized rsc compatibility: $x")
-      }
+      val compileTask = maybeGetRscIndex(rscCompatibleTargets)
+        .flatMap(rscIndex => rscIndex.maybeGetRscCompile(project).map((rscIndex -> _))) match {
+          case None => zincOnlyCompile()
+          case Some((rscIndex, rscArgs)) =>
+            val outlineTask = rscIndex.outline(project, rscArgs)
+              // .timeoutTo(10.seconds, Task.raiseError[RscCompileOutput](
+              //   new Exception(s"timeout for rsc outline of project $project")))
+            val scalacTask = bundleAndCompile(raiseOnFailure = true)
+            Task.chooseFirstOf(outlineTask, scalacTask)
+              .map {
+                case Left((rscOutline, scalacCompileFuture)) =>
+                  logger.info(s"rsc outline completed first for project $project")
+                  val bundle = rscOutline.asResultBundle.copy(
+                    // TODO: make this an Option[CancelableFuture[_]] instead?
+                    realCompilationTask = Some(Task.fromFuture(scalacCompileFuture)))
+                  newGraph(RscPartialSuccess(project, Task.now(bundle)))
+                // If the scalac compile beats out the rsc compile (unlikely), just take the scalac
+                // compile.
+                case Right((rscFuture, scalacOutput)) =>
+                  logger.warn(s"scalac output completed first for project $project")
+                  rscFuture.cancel()
+                  scalacOutput.dag
+              }
+        }
       compileTask
         .onErrorHandle {
           case e =>
@@ -745,9 +747,6 @@ object CompileGraph {
             // NB: Rsc is taking the place of pipelining in some sense, so we only look at hooking
             // into the non-pipelined `normalTraversal()` method (for now)!
             case Parent(project, dependencies) =>
-              // FIXME: move `outlineable` calculation out of the flatMap -- the rsc compiles of
-              // dependencies need to be kicked off *before* the dependencies of the current
-              // target!!!
               val downstream = dependencies.map(loop)
               Task.gatherUnordered(downstream).flatMap { dagResults =>
                 val blocking = dagResults.flatMap(dag => blockedBy(dag).toList)
@@ -763,7 +762,27 @@ object CompileGraph {
                   val transitive = dagResults.flatMap(Dag.dfs(_)).distinct
                   transitive.collect {
                     case PartialSuccess(bundle, _, result) => result.map(r => (bundle.project -> r))
-                    case RscPartialSuccess(project, result) => result.map(r => (project -> r))
+                    case RscPartialSuccess(depProject, result) => result.flatMap { r =>
+
+                      def getBackgroundScalacTask(): Task[(Project, ResultBundle)] =
+                        r.realCompilationTask.get.flatMap {
+                          case BackgroundNonRscCompileTaskResult(backgroundTask, _) =>
+                            backgroundTask
+                              .result
+                              .map((depProject -> _))
+                        }
+
+                      def getRscTask(): Task[(Project, ResultBundle)] = Task.now((depProject -> r))
+
+                      // NB: asserting that `rscCompatibleTargets` is non-None here!
+                      maybeGetRscIndex(rscCompatibleTargets).get.maybeGetWorkflow(project) match {
+                        // NB: switching based on the identity of the "parent" `project`!
+                        case Some(ZincJava) => getBackgroundScalacTask()
+                        case Some(ZincOnly) => getRscTask()
+                        case Some(RscAndZinc) => getRscTask()
+                        case None => getBackgroundScalacTask()
+                      }
+                    }
                   }
                 }
 

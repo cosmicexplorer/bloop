@@ -52,6 +52,19 @@ object RemoteCompileHandle {
   def empty: RemoteCompileHandle = RemoteCompileHandle(remoteCompiler = None)
 }
 
+case class RscProjectName(name: String)
+
+sealed abstract class RscWorkflow
+case object ZincOnly extends RscWorkflow
+case object ZincJava extends RscWorkflow
+case object RscAndZinc extends RscWorkflow
+case class RscTargetInfo(
+  workflow: RscWorkflow,
+  rscArgs: Seq[String]
+)
+
+trait RscCompiler
+
 case class CompileInputs(
     scalaInstance: ScalaInstance,
     compilerCache: CompilerCache,
@@ -77,7 +90,7 @@ case class CompileInputs(
     invalidatedClassFilesInDependentProjects: Set[File],
     generatedClassFilePathsInDependentProjects: Map[String, File],
     remoteCompileHandle: RemoteCompileHandle = RemoteCompileHandle.empty,
-    rscCompatibleTargets: Map[String, String] = Map.empty
+    rscCompatibleTargets: Option[RscCompiler] = None
 )
 
 case class CompileOutPaths(
