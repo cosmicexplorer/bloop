@@ -1,12 +1,15 @@
-#!/usr/bin/env sh
+#!/usr/bin/env bash
 
-BLOOP_REV_TO_FIND='1.3.2+56-183ce2ab+20190715-0359'
+set -exo pipefail
+
+BLOOP_REV_TO_FIND='1.3.2+57-70237dc4+20190725-1733'
 
 java_opts=()
 server_args=()
 for arg in "$@"; do
   if [[ $arg == -J* ]]; then
-    java_opts+=(${arg#"-J"})
+    # java_opts+=(${arg#"-J"})
+    java_opts+=($arg)
   else
     server_args+=($arg)
   fi
@@ -15,9 +18,45 @@ done
 echo "Detected java options are '${java_opts[@]}'"
 BASE_BIN_DIR=$(dirname "$0")
 COURSIER_BIN="$BASE_BIN_DIR/blp-coursier"
-/usr/libexec/java_home -v 1.8 -F -R --exec java \
-   "${java_opts[@]}" -jar "$COURSIER_BIN" launch "ch.epfl.scala:bloop-frontend_2.12:${BLOOP_REV_TO_FIND}" \
-  -r bintray:scalameta/maven \
-  -r bintray:scalacenter/releases \
-  -r https://oss.sonatype.org/content/repositories/staging \
-  --main bloop.Server -- "${server_args[@]}"
+
+function merge_jars {
+  tr '\n' ':' | sed -Ee 's#:$##g' \
+    && echo
+}
+
+export JAVA_HOME="/Users/dmcclanahan/Downloads/openjdk1.8.0_202-jvmci-0.59/Contents/Home"
+PATH="${JAVA_HOME}/bin:${PATH}"
+
+function run_with_java_home {
+  /usr/libexec/java_home \
+    -v 1.8 -F -R --exec java \
+    "$@"
+}
+
+function scala_packaged_jars {
+  printf "%s\n" ~/tools/scala/build/pack/lib/*.jar
+}
+
+run_with_java_home -jar "$COURSIER_BIN" \
+                   fetch \
+                   "ch.epfl.scala:bloop-frontend_2.12:${BLOOP_REV_TO_FIND}" \
+                   --exclude 'org.scala-lang:scala-compiler' \
+                   --exclude 'org.scala-lang:scala-library' \
+                   --exclude 'org.scala-lang:scala-reflect' \
+                   -r bintray:scalameta/maven \
+                   -r bintray:scalacenter/releases \
+                   -r https://oss.sonatype.org/content/repositories/staging \
+  | merge_jars | while read -r merged_bloop_cp; do
+
+  _scala_jars="$(scala_packaged_jars | merge_jars)"
+
+  # NB: see https://docs.oracle.com/javase/7/docs/technotes/samples/hprof.html for hprof options.
+  JAVA_OPTS='-Xmx9g -Xms2g' ~/tools/scala/build/pack/bin/scala \
+           "-Dscala.boot.class.path=${_scala_jars}" \
+           "${java_opts[@]}" \
+           -nobootcp \
+           -J-agentlib:hprof=cpu=samples,interval=5,depth=100,thread=y \
+           -cp "${_scala_jars}:${merged_bloop_cp}" \
+           bloop.Server \
+           "${server_args[@]}"
+done

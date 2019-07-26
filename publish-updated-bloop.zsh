@@ -2,7 +2,7 @@
 
 set -euxo pipefail
 
-sbt publishLocal publishM2 \
+sbt publish{Local,M2} \
   &> >(tee /dev/stderr) \
   | sed -rne 's#^.*bloop-frontend_2.12-(1.3.2.*)\.pom.*#\1#gp' \
   | head -n1 \
