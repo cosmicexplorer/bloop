@@ -292,12 +292,12 @@ lazy val mavenBloop = project
 //     publishLocal := publishLocal.dependsOn(publishLocal.in(jsonConfig212)).value
 //   )
 
-lazy val millBloop = project
-  .in(integrations / "mill-bloop")
-  .disablePlugins(ScriptedPlugin)
-  .dependsOn(jsonConfig212)
-  .settings(name := "mill-bloop")
-  .settings(BuildDefaults.millModuleBuildSettings)
+// lazy val millBloop = project
+//   .in(integrations / "mill-bloop")
+//   .disablePlugins(ScriptedPlugin)
+//   .dependsOn(jsonConfig212)
+//   .settings(name := "mill-bloop")
+//   .settings(BuildDefaults.millModuleBuildSettings)
 
 lazy val buildpressConfig = (project in file("buildpress-config"))
   .settings(
@@ -308,8 +308,7 @@ lazy val buildpressConfig = (project in file("buildpress-config"))
       Dependencies.circeGeneric
     ),
     addCompilerPlugin(
-      "org.scalamacros" % "paradise" % "2.1.1" cross CrossVersion.full
-    )
+      "org.scalamacros" % "paradise_2.12.8" % "2.1.1")
   )
 
 lazy val buildpress = project
@@ -420,7 +419,6 @@ val allProjects = Seq(
   mavenBloop,
   // gradleBloop211,
   // gradleBloop212,
-  millBloop,
   nativeBridge03,
   nativeBridge04,
   jsBridge06,
@@ -477,7 +475,6 @@ addCommandAlias(
     s"${frontend.id}/$publishLocalCmd",
     s"${nativeBridge03.id}/$publishLocalCmd",
     s"${nativeBridge04.id}/$publishLocalCmd",
-    s"${millBloop.id}/$publishLocalCmd",
     s"${jsBridge06.id}/$publishLocalCmd",
     s"${jsBridge10.id}/$publishLocalCmd",
     s"${sockets.id}/$publishLocalCmd",
@@ -517,7 +514,6 @@ val allBloopReleases = List(
   s"${mavenBloop.id}/$releaseEarlyCmd",
   // s"${gradleBloop211.id}/$releaseEarlyCmd",
   // s"${gradleBloop212.id}/$releaseEarlyCmd",
-  s"${millBloop.id}/$releaseEarlyCmd",
   s"${nativeBridge03.id}/$releaseEarlyCmd",
   s"${nativeBridge04.id}/$releaseEarlyCmd",
   s"${jsBridge06.id}/$releaseEarlyCmd",

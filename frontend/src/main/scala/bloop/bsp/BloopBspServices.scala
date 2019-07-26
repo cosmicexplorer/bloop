@@ -73,19 +73,21 @@ case class BloopHackedRemoteCompileProtocolOverBSP(
         // NB: this check-then-set impl is not thread-safe for colliding `req`s! That should be
         // fine, though.
         remoteCompilesSemaphore.put(req, p)
-        val ret = Task.fromFuture(endpoints.Build.taskFinish.notify(
-          bsp.TaskFinishParams(
-            bsp.TaskId("???", None),
-            None,
-            None,
-            bsp.StatusCode.Ok,
-            dataKind = Some("bloop-hacked-remote-compile-request"),
-            data = Some(Map(
-              "sources" -> req.sources.map(_.toString)
-            ).asJson))
-        )).flatMap { Unit => Task.fromFuture(p.future) }
-        // p.success(RemoteCompileOutput(classesDir = AbsolutePath("asdf")))
-        ret
+        // val ret = Task.fromFuture(endpoints.Build.taskFinish.notify(
+        //   bsp.TaskFinishParams(
+        //     bsp.TaskId("???", None),
+        //     None,
+        //     None,
+        //     bsp.StatusCode.Ok,
+        //     dataKind = Some("bloop-hacked-remote-compile-request"),
+        //     data = Some(Map(
+        //       "sources" -> req.sources.map(_.toString)
+        //     ).asJson))
+        // )).flatMap { Unit => Task.fromFuture(p.future) }
+        val out = RemoteCompileOutput(classesDir = AbsolutePath("asdf"))
+        p.success(out)
+        Task.now(out)
+        // ret
     }
   }
 }
@@ -732,11 +734,14 @@ final class BloopBspServices(
           val result = RemoteCompileOutput(classesDir = AbsolutePath(classesDir))
 
           val p = Option(runningRemoteCompiles.get(req)).get
-          p.success(result)
+          if (p.isCompleted) {
+            bspLogger.warn(s"completed multiple times for promise $p. new value $result will be ignored!!")
+          } else p.success(result)
+
 
           bspLogger.info(s"completed promise for $result for request $req")
 
-          return Right(bsp.RunResult(None, bsp.StatusCode.Ok))
+          Right(bsp.RunResult(None, bsp.StatusCode.Ok))
         case Some(bsp.RunParamsDataKind.ScalaMainClass) =>
           params.data match {
             case None =>
