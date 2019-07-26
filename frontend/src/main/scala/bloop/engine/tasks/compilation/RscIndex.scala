@@ -49,13 +49,13 @@ case class RscCompileOutput(project: Option[RscProjectName], var newClasspath: S
     )
   }
 
-  def replaceClasspath(newCp: Seq[AbsolutePath]): Unit = synchronized {
-    newClasspath = newCp
+  def prependClasspath(rhs: RscCompileOutput): Unit = synchronized {
+    newClasspath = rhs.newClasspath ++ newClasspath
   }
 }
 
 object RscCompileOutput {
-  def empty = RscCompileOutput(None, Seq())
+  lazy val empty = RscCompileOutput(None, Seq())
 }
 
 case class RscIndex(targetMapping: Map[RscProjectName, RscTargetInfo]) extends RscCompiler {
@@ -121,34 +121,28 @@ case class RscIndex(targetMapping: Map[RscProjectName, RscTargetInfo]) extends R
     .get(RscProjectName(project.name))
     .map(_.workflow)
 
-  def registerMissing(name: RscProjectName)(implicit logger: Logger): Unit = {
+  def registerMissing(name: RscProjectName)(implicit logger: Logger): Boolean = {
     val (p, _) = getOutputPromise(name)
-    if (p.isCompleted) {
-      // logger.warn(s"project $name to mark missing already contained $p!!")
-    } else {
-      p.success(RscCompileOutput.empty)
-      // logger.info(s"missing output registered for project $name!")
-    }
-    ()
+    p.trySuccess(RscCompileOutput.empty)
   }
 
-  def registerCompiled(project: Project, successful: BloopCompiler.Result.Success)(implicit logger: Logger): Unit = {
+  def registerCompiled(project: Project, successful: BloopCompiler.Result.Success)(implicit logger: Logger): Boolean = {
     val name = RscProjectName(project.name)
     val newDirs = Seq(successful.products.newClassesDir, successful.products.readOnlyClassesDir)
       .map(AbsolutePath(_))
     val result = RscCompileOutput(Some(name), newDirs)
-    // logger.info(s"result for project $project was: $result")
     val (p, _) = getOutputPromise(name)
-    // logger.info(s"got promise $p!")
-    if (p.isCompleted) {
-      val previousResult = Await.result(p.future, FiniteDuration(0, "s"))
-      assert(!result.project.isEmpty)
-      logger.warn(s"project name clash! new result $result for $project. dropping previous result $previousResult")
-      previousResult.replaceClasspath(result.newClasspath)
-    } else {
-      p.success(result)
+    val isNew: Boolean = p.trySuccess(result)
+    if (isNew) {
       logger.info(s"initialized result $result for project $project")
+    } else {
+      val previousResult = Await.result(p.future, FiniteDuration(0, "s"))
+      assert(previousResult.project.nonEmpty)
+      assert(result.project.nonEmpty)
+      logger.warn(s"project name clash! new result $result for $project. pushing previous result $previousResult to the back!")
+      previousResult.prependClasspath(result)
     }
+    isNew
   }
 
   def outline(project: Project, rscArgs: RscArgs)(implicit logger: Logger): Task[RscCompileOutput] = {

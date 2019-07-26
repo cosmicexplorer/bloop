@@ -665,13 +665,13 @@ object CompileGraph {
           .flatMap(missingProjects(_))
           .map(p => RscProjectName(p.name)).foreach { name =>
             rscIndex.registerMissing(name)
-            // logger.info(s"registered missing project $name!")
           }
       }
 
       def bundleAndCompile(raiseOnFailure: Boolean): Task[BackgroundNonRscCompileTaskResult] = {
         val bundleInputs = BundleInputs(project, dag, dependentProducts)
         setupAndDeduplicate(client, bundleInputs, computeBundle) { bundle =>
+          // bundle.uniqueInputs.classpath
           val oracle = new SimpleOracle
           val inputs = Inputs(bundle, oracle, None, dependentResults)
           val compileResult = compile(inputs).map { results =>
