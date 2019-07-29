@@ -6,6 +6,7 @@ import bloop.data.Project
 import bloop.io.AbsolutePath
 import bloop.logging.{DebugFilter, Logger}
 
+import ammonite.ops._
 import monix.eval.Task
 import monix.execution.CancelableFuture
 import xsbti.compile.PreviousResult
