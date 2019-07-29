@@ -724,6 +724,7 @@ final class BloopBspServices(
   def run(params: bsp.RunParams): BspEndpointResponse[bsp.RunResult] = {
     def parseMainClassOrRemoteCompile(project: Project, state: State): Either[Exception, bsp.ScalaMainClass] = {
       params.dataKind match {
+        // NB: Commented out for now as remote compiles aren't currently necessary.
         case Some("pants-hacked-remote-compile-result") =>
           bspLogger.info("WE GOT SOMETHING!!!")
           val mapping = params.data.get.asObject.get

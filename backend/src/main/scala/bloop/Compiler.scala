@@ -383,25 +383,26 @@ object Compiler {
     val uniqueInputs = compileInputs.uniqueInputs
     reporter.reportStartCompilation(previousProblems)
 
-    compileInputs.remoteCompileHandle.remoteCompiler.foreach { remoteCompiler =>
-      val remoteInputs = RemoteCompileInput(sources = compileInputs.sources)
-      remoteCompiler
-        .requestRemoteCompile(remoteInputs)
-        .map { resp =>
-          logger.info(s"remote compile complete: $resp for input $remoteInputs")
-          ()
-        }
-        .timeoutTo(3.seconds, Task.eval {
-          logger.warn(s"remote compile request timed out for $remoteInputs!!!")
-          ()
-        })
-        .onErrorHandle {
-          case e =>
-            logger.trace(e)
-            logger.error(e.toString)
-            Task.unit
-        }.runAsync(remoteCompiler.scheduler)
-    }
+    // NB: Commented out as remote compiles are disabled for now!
+    // compileInputs.remoteCompileHandle.remoteCompiler.foreach { remoteCompiler =>
+    //   val remoteInputs = RemoteCompileInput(sources = compileInputs.sources)
+    //   remoteCompiler
+    //     .requestRemoteCompile(remoteInputs)
+    //     .map { resp =>
+    //       logger.info(s"remote compile complete: $resp for input $remoteInputs")
+    //       ()
+    //     }
+    //     .timeoutTo(3.seconds, Task.eval {
+    //       logger.warn(s"remote compile request timed out for $remoteInputs!!!")
+    //       ()
+    //     })
+    //     .onErrorHandle {
+    //       case e =>
+    //         logger.trace(e)
+    //         logger.error(e.toString)
+    //         Task.unit
+    //     }.runAsync(remoteCompiler.scheduler)
+    // }
 
     val doCompile: Task[Compiler.Result] = BloopZincCompiler
       .compile(inputs, mode, reporter, logger, uniqueInputs, newFileManager, tracer)
