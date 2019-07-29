@@ -2,7 +2,7 @@
 
 set -exo pipefail
 
-BLOOP_REV_TO_FIND='1.3.2+60-be917b93+20190728-2244'
+BLOOP_REV_TO_FIND='1.3.2+63-c6a4b7e3+20190729-1151'
 
 java_opts=()
 server_args=()

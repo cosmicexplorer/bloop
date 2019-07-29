@@ -62,7 +62,7 @@ object RscCompileOutput {
 }
 
 case class RscIndex(targetMapping: Map[RscProjectName, RscTargetInfo]) extends RscCompiler {
-  var cachedRsc = rsc.CachedCompiler.firstUse(rsc.classpath.Classpath(List(), 32))
+  val cachedRsc = rsc.CachedCompiler.firstUse(rsc.classpath.Classpath(List(), 32))
 
   import scala.meta.internal.semanticdb.Scala.Descriptor
   import scala.meta.scalasig.lowlevel.Name
@@ -201,19 +201,13 @@ case class RscIndex(targetMapping: Map[RscProjectName, RscTargetInfo]) extends R
           import rsc.report._
           implicit val _ctx: bloop.logging.DebugFilter = bloop.logging.DebugFilter.Compilation
 
-          // FIXME: this is an incredibly coarse synchronized block (no parallel rsc runs)! When we
-          // can *merge* classpath/symtab/trees/etc then we can remove this entirely!
-          this.synchronized {
-            val compiler = rsc.Compiler(settings, reporter, cachedRsc)
-            try {
-              // FIXME: make this return a Future or Task instead of synchronously/statefully blocking!!
-              compiler.run2()
-              // NB: merge the entries that were just created from the current outline into the
-              // classpath used for later compiles!
-              cachedRsc = compiler.saveState
-            } finally {
-              compiler.close()
-            }
+          val compiler = rsc.Compiler(settings, reporter, cachedRsc)
+          try {
+            // FIXME: make this return a Future or Task instead of synchronously/statefully
+            // blocking!!
+            compiler.run2()
+          } finally {
+            compiler.close()
           }
 
           reporter.messages.foreach {
