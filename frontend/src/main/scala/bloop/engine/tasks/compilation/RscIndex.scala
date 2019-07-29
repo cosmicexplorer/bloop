@@ -50,6 +50,8 @@ case class RscCompileOutput(project: Option[RscProjectName], var newClasspath: S
     )
   }
 
+  // FIXME: THIS IS A HACK -- IT SHOULD BE DETERMINISTIC WHETHER COMPILES USE RSC OR SCALAC OUTPUTS!
+  // THIS IS AN EASY FIX!!!
   def prependClasspath(rhs: RscCompileOutput): Unit = synchronized {
     newClasspath = rhs.newClasspath ++ newClasspath
   }
@@ -60,6 +62,8 @@ object RscCompileOutput {
 }
 
 case class RscIndex(targetMapping: Map[RscProjectName, RscTargetInfo]) extends RscCompiler {
+  var cachedRsc = rsc.CachedCompiler.firstUse(rsc.classpath.Classpath(List(), 32))
+
   import scala.meta.internal.semanticdb.Scala.Descriptor
   import scala.meta.scalasig.lowlevel.Name
 
@@ -74,8 +78,6 @@ case class RscIndex(targetMapping: Map[RscProjectName, RscTargetInfo]) extends R
   private val dcache: ConcurrentHashMap[String, (Descriptor, String)] = new ConcurrentHashMap(50000)
   private val cacheSymIsEmbedded: HashMap[String, Boolean] = new HashMap()
   private val ncache: HashMap[String, Name] = new HashMap(50000)
-
-  private val classpath = Classpath(List(), 32)
 
   // sealed abstract class RscOrScalacOutput
   // case class RscOutput(output: RscCompileOutput) extends RscOrScalacOutput
@@ -92,7 +94,7 @@ case class RscIndex(targetMapping: Map[RscProjectName, RscTargetInfo]) extends R
   def getOutputPromise(name: RscProjectName): (Promise[RscCompileOutput], Boolean) =
     Option(rscMixedCompileClasspath.get(name)).map((_ -> false)).getOrElse {
       val p = Promise[RscCompileOutput]()
-      // NB: double-checked locking!!
+      // NB: double-checked locking!!!???
       Option(rscMixedCompileClasspath.putIfAbsent(name, p))
         .map((_ -> false))
         // `.putIfAbsent()` returns the previous value -- if null, then the promise `p` we've just
@@ -170,32 +172,50 @@ case class RscIndex(targetMapping: Map[RscProjectName, RscTargetInfo]) extends R
     val baseSettings = rsc.settings.Settings.parse(rscArgs.args.toList).get.copy(
       xprint = Set("timings"),
       dcache = dcache,
-      cacheSymIsEmbedded = new HashMap[String, Boolean](), // cacheSymIsEmbedded,
-      ncache = new HashMap[String, Name](),                // ncache,
-      classpath = classpath
+      cacheSymIsEmbedded = cacheSymIsEmbedded,
+      ncache = ncache,
+      classpath = cachedRsc.classpath
     )
 
     val outputJar = AbsolutePath(baseSettings.d)
     logger.info(s"output jar $outputJar for project $project")
 
     val indexClasspath = inputClasspath.flatMap { rscClasspath =>
-      // FIXME: do we need anything other than the base settings, since the compiles should output
-      // to the same place????
-      val entireInputCp = rscClasspath.toList ++ baseSettings.cp.map(AbsolutePath(_))
-      // FIXME: convert this into returning a Future or Task instead of a synchronous .go()?!
-      val indexTask = Task.fork(Task.eval(classpath.go(entireInputCp.map(_.underlying))))
-      val settings = baseSettings.copy(cp = entireInputCp.map(_.underlying))
-      val reporter = rsc.report.StoreReporter(settings)
-      val compiler = rsc.Compiler(settings, reporter)
-      indexTask.map(Unit => (settings, reporter, compiler))
+      val entireInputCp = (rscClasspath.toList ++ baseSettings.cp.map(AbsolutePath(_)))
+        .filter(_.exists)
+        .distinct
+      val settings = baseSettings.copy(
+        cp = entireInputCp.map(_.underlying),
+        // NB: we hardcode scalasigs only for now. we will remove all file outputs soon.
+        artifacts = List(rsc.settings.ArtifactScalasig)
+        // artifacts = Nil
+      )
+      implicit val reporter = rsc.report.StoreReporter(settings)
+      // TODO: convert this into returning a Future or Task instead of a synchronous .go()?!
+      val indexTask = Task.fork(Task.eval(cachedRsc.classpath.go(entireInputCp.map(_.underlying))))
+      indexTask.map(Unit => (settings, reporter))
     }
     val doRscCompile: Task[RscCompileOutput] = indexClasspath.flatMap {
-      case (settings, reporter, compiler) =>
+      case (settings, reporter) =>
         Task {
           import rsc.report._
           implicit val _ctx: bloop.logging.DebugFilter = bloop.logging.DebugFilter.Compilation
-          // FIXME: make this return a Future or Task instead of synchronously/statefully blocking!!
-          compiler.run2()
+
+          // FIXME: this is an incredibly coarse synchronized block (no parallel rsc runs)! When we
+          // can *merge* classpath/symtab/trees/etc then we can remove this entirely!
+          this.synchronized {
+            val compiler = rsc.Compiler(settings, reporter, cachedRsc)
+            try {
+              // FIXME: make this return a Future or Task instead of synchronously/statefully blocking!!
+              compiler.run2()
+              // NB: merge the entries that were just created from the current outline into the
+              // classpath used for later compiles!
+              cachedRsc = compiler.saveState
+            } finally {
+              compiler.close()
+            }
+          }
+
           reporter.messages.foreach {
             case _: rsc.report.ErrorSummary => ()
             case x => x.sev match {
@@ -208,9 +228,6 @@ case class RscIndex(targetMapping: Map[RscProjectName, RscTargetInfo]) extends R
           val name = RscProjectName(project.name)
           if (reporter.problems.isEmpty) RscCompileOutput(Some(name), Seq(outputJar))
           else throw new Exception("???/rsc failed!! see messages!!!")
-        }.doOnFinish { _ =>
-          compiler.close()
-          Task.unit
         }
     }
 
