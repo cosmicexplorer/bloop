@@ -2,7 +2,7 @@
 
 set -exo pipefail
 
-BLOOP_REV_TO_FIND='1.3.2+63-c6a4b7e3+20190729-1151'
+BLOOP_REV_TO_FIND='1.3.2+64-f8ba0851+20190801-2138'
 
 java_opts=()
 server_args=()
@@ -33,30 +33,25 @@ function run_with_java_home {
     "$@"
 }
 
-function scala_packaged_jars {
-  printf "%s\n" ~/tools/scala/build/pack/lib/*.jar
+# function scala_packaged_jars {
+#   printf "%s\n" ~/tools/scala/build/pack/lib/*.jar
+# }
+
+function rsc_packaged_jars {
+  coursier fetch 'com.twitter:rsc_2.12:0.0.0-794-2aa0b91e-20190801-2123'
 }
 
 run_with_java_home -jar "$COURSIER_BIN" \
                    fetch \
                    "ch.epfl.scala:bloop-frontend_2.12:${BLOOP_REV_TO_FIND}" \
-                   --exclude 'org.scala-lang:scala-compiler' \
-                   --exclude 'org.scala-lang:scala-library' \
-                   --exclude 'org.scala-lang:scala-reflect' \
-                   -r bintray:scalameta/maven \
-                   -r bintray:scalacenter/releases \
-                   -r https://oss.sonatype.org/content/repositories/staging \
   | merge_jars | while read -r merged_bloop_cp; do
 
-  _scala_jars="$(scala_packaged_jars | merge_jars)"
-
   # NB: see https://docs.oracle.com/javase/7/docs/technotes/samples/hprof.html for hprof options.
-  JAVA_OPTS='-Xmx9g -Xms2g' ~/tools/scala/build/pack/bin/scala \
-           "-Dscala.boot.class.path=${_scala_jars}" \
-           "${java_opts[@]}" \
-           -nobootcp \
-           -J-agentlib:hprof=cpu=samples,interval=5,depth=100,thread=y \
-           -cp "${_scala_jars}:${merged_bloop_cp}" \
-           bloop.Server \
-           "${server_args[@]}"
+  ~/tools/scala/build/pack/bin/scala \
+    -J-Xmx9g -J-Xms2g \
+    "${java_opts[@]}" \
+    -J-agentlib:hprof=cpu=samples,interval=5,depth=100,thread=y \
+    -cp "$merged_bloop_cp" \
+    bloop.Server \
+    "${server_args[@]}"
 done

@@ -3,7 +3,7 @@ package build
 object Dependencies {
   val Scala210Version = "2.10.7"
   val Scala211Version = "2.11.12"
-  val Scala212Version = "2.12.8-bin-SNAPSHOT"
+  val Scala212Version = "2.12.8"
 
   val Sbt013Version = "0.13.18"
   val Sbt1Version   = "1.2.8"
@@ -52,7 +52,7 @@ object Dependencies {
   val zipkinSenderVersion = "2.7.15"
   val jnaVersion = "4.5.0"
   val asmVersion = "6.0"
-  val rscVersion = "0.0.0-793-ba7e6067-20190729-1150"
+  val rscVersion = "0.0.0-794-2aa0b91e-20190801-2123"
 
   import sbt.librarymanagement.syntax.stringToOrganization
   val zinc = "ch.epfl.scala" %% "zinc" % zincVersion

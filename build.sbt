@@ -195,6 +195,7 @@ lazy val frontend: Project = project
     javaOptions in IntegrationTest ++= jvmOptions,
     libraryDependencies += Dependencies.graphviz % Test,
     libraryDependencies += "com.lihaoyi" %% "ammonite-ops" % "1.6.9",
+    libraryDependencies += "org.scala-lang" % "scala-compiler" % Dependencies.Scala212Version,
     fork in run := true,
     fork in Test := true,
     fork in run in IntegrationTest := true,

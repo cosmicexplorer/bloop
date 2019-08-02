@@ -186,10 +186,8 @@ case class RscIndex(targetMapping: Map[RscProjectName, RscTargetInfo]) extends R
         .distinct
       val settings = baseSettings.copy(
         cp = entireInputCp.map(_.underlying),
-        // NB: we hardcode scalasigs only for now. we will remove all file outputs soon.
-        artifacts = List(rsc.settings.ArtifactScalasig)
-        // artifacts = Nil
-      )
+        artifacts = List(rsc.settings.ArtifactScalasig),
+        memoryLocations = rsc.settings.MemoryAndFilesystem)
       implicit val reporter = rsc.report.StoreReporter(settings)
       // TODO: convert this into returning a Future or Task instead of a synchronous .go()?!
       val indexTask = Task.fork(Task.eval(cachedRsc.classpath.go(entireInputCp.map(_.underlying))))
@@ -201,7 +199,13 @@ case class RscIndex(targetMapping: Map[RscProjectName, RscTargetInfo]) extends R
           import rsc.report._
           implicit val _ctx: bloop.logging.DebugFilter = bloop.logging.DebugFilter.Compilation
 
-          val compiler = rsc.Compiler(settings, reporter, cachedRsc)
+          val compiler = rsc.Compiler(
+            settings, reporter,
+            // FIXME: figure out how to get all the right info into the scalac classpath so that we
+            // can carry over the outlines and classpath indexing from rsc!!!
+            rsc.CachedCompiler.firstUse(cachedRsc.classpath)
+            // cachedRsc
+          )
           try {
             // FIXME: make this return a Future or Task instead of synchronously/statefully
             // blocking!!
