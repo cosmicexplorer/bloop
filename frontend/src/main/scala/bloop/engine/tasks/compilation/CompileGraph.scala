@@ -62,7 +62,7 @@ object CompileGraph {
   )
 
   private def maybeGetRscIndex(rscCompatibleTargets: Option[RscCompiler]): Option[RscIndex] =
-    rscCompatibleTargets.map(_.asInstanceOf[RscIndex])
+    rscCompatibleTargets.flatMap(x => Option(x.asInstanceOf[RscIndex]))
 
   /**
    * Turns a dag of projects into a task that returns a dag of compilation results
