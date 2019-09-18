@@ -82,8 +82,8 @@ object Dag {
     )
   }
 
-  def dagFor[T](dags: List[Dag[T]], target: T, f: T => String): Option[Dag[T]] =
-    dagFor(dags, Set(target), f).flatMap(_.headOption)
+  def dagFor[T](dags: List[Dag[T]], target: T): Option[Dag[T]] =
+    dagFor(dags, Set(target)).flatMap(_.headOption)
 
   /**
    * Return a list of dags that match all the targets.

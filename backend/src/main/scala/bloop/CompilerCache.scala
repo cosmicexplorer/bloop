@@ -299,7 +299,6 @@ final class CompilerCache(
       // Needed because JavaFileManager doesn't expect WriteReportingJavaFileObjects in isSameFile, fixes #956
       override def isSameFile(a: FileObject, b: FileObject): Boolean = {
         def unwrap(fo: FileObject): FileObject = fo match {
-          case wrfo: WriteReportingJavaFileObject => wrfo.javaFileObject
           case other => other
         }
         super.isSameFile(unwrap(a), unwrap(b))

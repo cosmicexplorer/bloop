@@ -8,15 +8,15 @@ import java.nio.file.{Files, FileSystems, Path, Paths}
 import java.util.concurrent.ConcurrentHashMap
 import java.util.stream.Collectors
 
+import _root_.io.circe.Decoder.Result
+import _root_.io.circe.derivation.JsonCodec
+import _root_.io.circe.generic.semiauto._
+import _root_.io.circe.syntax._
+import _root_.io.circe._
+
 import bloop.io.ServerHandle
 import bloop.data.WorkspaceSettings
 import bloop.bsp.BloopBspDefinitions.BloopExtraBuildParams
-
-import io.circe.Decoder.Result
-import io.circe.derivation.JsonCodec
-import io.circe.generic.semiauto._
-import io.circe.syntax._
-import io.circe._
 
 import bloop._
 import bloop.cli.{Commands, ExitStatus, Validate}
@@ -54,7 +54,7 @@ import scala.util.Success
 import scala.util.Failure
 
 import monix.execution.Cancelable
-import io.circe.{Decoder, Json}
+import _root_.io.circe.{Decoder, Json}
 import bloop.engine.Feedback
 
 case class BloopHackedRemoteCompileProtocolOverBSP(
@@ -289,9 +289,7 @@ final class BloopBspServices(
       }
     }
 
-    assert(remoteCompileInterface == null)
     // TODO: open this as an "rw" RandomAccessFile!!! https://stackoverflow.com/questions/30393606/reading-writing-a-named-pipe-in-java/30394059#30394059
-
     val file = params.data.get.as[Map[String, String]] match {
       case Left(x) => throw new Exception(s"oh!!! $x")
       case Right(cfg) =>
@@ -303,11 +301,6 @@ final class BloopBspServices(
     val channel = file.getChannel
     val fileIn = java.nio.channels.Channels.newInputStream(channel)
     val fileOut = java.nio.channels.Channels.newOutputStream(channel)
-
-    remoteCompileInterface = RemoteCompileIPCInterface(
-      in = fileIn,
-      out = fileOut
-    )
 
     val retData: Option[Json] = params.data
       .map(_.as[Map[String, (String, Seq[String])]].right.get).map { mapping =>
@@ -409,7 +402,7 @@ final class BloopBspServices(
       targets: Seq[bsp.BuildTargetIdentifier],
       state: State
   ): Either[String, Seq[ProjectMapping]] = {
-    bspLogger.info(s"targets: $targets")
+    baseBspLogger.info(s"targets: $targets")
     if (targets.isEmpty) {
       Left("Empty build targets. Expected at least one build target identifier.")
     } else {
@@ -473,7 +466,7 @@ final class BloopBspServices(
         pipeline,
         false,
         cancelCompilation,
-        bspLogger,
+        baseBspLogger,
         remoteCompileHandle = RemoteCompileHandle(remoteCompiler = Some(
           BloopHackedRemoteCompileProtocolOverBSP(runningRemoteCompiles, ioScheduler)(client))),
         rscCompatibleTargets = Some(targetMapping)
@@ -541,7 +534,7 @@ final class BloopBspServices(
           Task.now((state, Right(bsp.CompileResult(None, bsp.StatusCode.Error, None, None))))
         case Right(mappings) =>
           val compileArgs = params.arguments.getOrElse(Nil)
-          bspLogger.info(s"mappings: $mappings")
+          baseBspLogger.info(s"mappings: $mappings")
           compileProjects(mappings, state, compileArgs, params.originId, logger)
       }
     }
@@ -722,7 +715,52 @@ final class BloopBspServices(
   }
 
   def run(params: bsp.RunParams): BspEndpointResponse[bsp.RunResult] = {
-    def parseMainClassOrRemoteCompile(project: Project, state: State): Either[Exception, bsp.ScalaMainClass] = {
+    val bspLogger = baseBspLogger
+    def run(
+        id: BuildTargetIdentifier,
+        project: Project,
+        state: State
+    ): Task[State] = {
+      import bloop.engine.tasks.LinkTask.{linkMainWithJs, linkMainWithNative}
+      val cwd = state.commonOptions.workingPath
+
+      def runMainClass(mainClass: bsp.ScalaMainClass): Task[State] = {
+        project.platform match {
+          case Platform.Jvm(javaEnv, _, _) =>
+            val mainArgs = mainClass.arguments.toArray
+            val env = JavaEnv(javaEnv.javaHome, javaEnv.javaOptions ++ mainClass.jvmOptions)
+            Tasks.runJVM(
+              state,
+              project,
+              env,
+              cwd,
+              mainClass.`class`,
+              mainArgs,
+              skipJargs = false,
+              RunMode.Normal
+            )
+          case platform @ Platform.Native(config, _, _) =>
+            val cmd = Commands.Run(List(project.name))
+            val target = ScalaNativeToolchain.linkTargetFrom(project, config)
+            linkMainWithNative(cmd, project, state, mainClass.`class`, target, platform)
+              .flatMap { state =>
+                val args = (target.syntax +: cmd.args).toArray
+                if (!state.status.isOk) Task.now(state)
+                else Tasks.runNativeOrJs(state, project, cwd, mainClass.`class`, args)
+              }
+          case platform @ Platform.Js(config, _, _) =>
+            val cmd = Commands.Run(List(project.name))
+            val target = ScalaJsToolchain.linkTargetFrom(project, config)
+            linkMainWithJs(cmd, project, state, mainClass.`class`, target, platform)
+              .flatMap { state =>
+                // We use node to run the program (is this a special case?)
+                val args = ("node" +: target.syntax +: cmd.args).toArray
+                if (!state.status.isOk) Task.now(state)
+                else Tasks.runNativeOrJs(state, project, cwd, mainClass.`class`, args)
+              }
+        }
+      }
+
       params.dataKind match {
         // NB: Commented out for now as remote compiles aren't currently necessary.
         case Some("pants-hacked-remote-compile-result") =>
@@ -742,72 +780,16 @@ final class BloopBspServices(
 
           bspLogger.info(s"completed promise for $result for request $req")
 
-          Right(bsp.RunResult(None, bsp.StatusCode.Ok))
-        case Some(bsp.RunParamsDataKind.ScalaMainClass) =>
-          params.data match {
-            case None =>
-              Left(new IllegalStateException(s"Missing data for $params"))
-            case Some(json) =>
-              json.as[bsp.ScalaMainClass]
-          }
+          Task.now(state)
         case Some(kind) =>
-          Left(new IllegalArgumentException(s"Unsupported data kind: $kind"))
+          Task.raiseError[State](new IllegalArgumentException(s"Unsupported data kind: $kind"))
         case None =>
           val cmd = Commands.Run(List(project.name))
           Interpreter.getMainClass(state, project, cmd.main) match {
             case Right(name) =>
-              Right(new bsp.ScalaMainClass(name, cmd.args, Nil))
+              runMainClass(new bsp.ScalaMainClass(name, cmd.args, Nil))
             case Left(_) =>
-              Left(new IllegalStateException(s"Main class for project $project not found"))
-          }
-      }
-    }
-
-    def run(
-        id: BuildTargetIdentifier,
-        project: Project,
-        state: State
-    ): Task[State] = {
-      import bloop.engine.tasks.LinkTask.{linkMainWithJs, linkMainWithNative}
-      val cwd = state.commonOptions.workingPath
-
-      parseMainClassOrRemoteCompile(project, state) match {
-        case Left(error) =>
-          Task.now(sys.error(s"Failed to run main class in $project due to: ${error.getMessage}"))
-        case Right(mainClass) =>
-          project.platform match {
-            case Platform.Jvm(javaEnv, _, _) =>
-              val mainArgs = mainClass.arguments.toArray
-              val env = JavaEnv(javaEnv.javaHome, javaEnv.javaOptions ++ mainClass.jvmOptions)
-              Tasks.runJVM(
-                state,
-                project,
-                env,
-                cwd,
-                mainClass.`class`,
-                mainArgs,
-                skipJargs = false,
-                RunMode.Normal
-              )
-            case platform @ Platform.Native(config, _, _) =>
-              val cmd = Commands.Run(List(project.name))
-              val target = ScalaNativeToolchain.linkTargetFrom(project, config)
-              linkMainWithNative(cmd, project, state, mainClass.`class`, target, platform)
-                .flatMap { state =>
-                  val args = (target.syntax +: cmd.args).toArray
-                  if (!state.status.isOk) Task.now(state)
-                  else Tasks.runNativeOrJs(state, project, cwd, mainClass.`class`, args)
-                }
-            case platform @ Platform.Js(config, _, _) =>
-              val cmd = Commands.Run(List(project.name))
-              val target = ScalaJsToolchain.linkTargetFrom(project, config)
-              linkMainWithJs(cmd, project, state, mainClass.`class`, target, platform)
-                .flatMap { state =>
-                  // We use node to run the program (is this a special case?)
-                  val args = ("node" +: target.syntax +: cmd.args).toArray
-                  if (!state.status.isOk) Task.now(state)
-                  else Tasks.runNativeOrJs(state, project, cwd, mainClass.`class`, args)
-                }
+              Task.raiseError[State](new IllegalStateException(s"Main class for project $project not found"))
           }
       }
     }

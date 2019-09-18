@@ -225,7 +225,7 @@ object Compiler {
 
     object Ok {
       def unapply(result: Result): Option[Result] = result match {
-        case s @ (RscSuccess(_) | Success(_, _, _, _, _, _) | Empty) => Some(s)
+        case s @ (RscSuccess(_) | Success(_, _, _, _, _, _, _) | Empty) => Some(s)
         case _ => None
       }
     }
@@ -468,7 +468,8 @@ object Compiler {
               definedMacroSymbols
             )
 
-            }
+            val backgroundTasks =
+              toBackgroundTasks(backgroundTasksForFailedCompilation.toList)
 
             Result.Success(
               compileInputs.uniqueInputs,
@@ -476,7 +477,8 @@ object Compiler {
               products,
               elapsed,
               backgroundTasks,
-              isNoOp
+              isNoOp,
+              reportedFatalWarnings
             )
           } else {
             val persistTask = {

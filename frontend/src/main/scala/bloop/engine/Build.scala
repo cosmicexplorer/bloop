@@ -24,7 +24,7 @@ final case class Build private (
     stringToProjects.get(name)
 
   def getDagFor(project: Project): Dag[Project] =
-    Dag.dagFor[Project](dags, project, { p: Project => p.name }).getOrElse(sys.error(s"Project $project does not have a DAG!"))
+    Dag.dagFor[Project](dags, project).getOrElse(sys.error(s"Project $project does not have a DAG!"))
 
   def hasMissingDependencies(project: Project): Option[List[String]] =
     missingDeps.get(project)
