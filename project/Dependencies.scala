@@ -50,7 +50,7 @@ object Dependencies {
   val zipkinSenderVersion = "2.7.15"
   val jnaVersion = "4.5.0"
   val asmVersion = "6.0"
-  val rscVersion = "0.0.0-852-4e537fc2-20190917-1526"
+  val rscVersion = "0.0.0-854-4eaa0441"
 
   import sbt.librarymanagement.syntax.stringToOrganization
   val zinc = "ch.epfl.scala" %% "zinc" % zincVersion

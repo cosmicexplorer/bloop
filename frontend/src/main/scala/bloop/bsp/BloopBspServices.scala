@@ -112,7 +112,7 @@ final class BloopBspServices(
 ) {
   val runningRemoteCompiles = new ConcurrentHashMap[RemoteCompileInput, Promise[RemoteCompileOutput]]()
 
-  var targetMapping: RscIndex = null
+  var targetMapping: RscIndex = _
 
   private implicit val debugFilter: DebugFilter = DebugFilter.Bsp
   private type ProtocolError = JsonRpcResponse.Error
@@ -289,26 +289,13 @@ final class BloopBspServices(
       }
     }
 
-    // TODO: open this as an "rw" RandomAccessFile!!! https://stackoverflow.com/questions/30393606/reading-writing-a-named-pipe-in-java/30394059#30394059
-    val file = params.data.get.as[Map[String, String]] match {
-      case Left(x) => throw new Exception(s"oh!!! $x")
-      case Right(cfg) =>
-        new java.io.RandomAccessFile(cfg("output_stream"), "rw")
-        // TODO: ignored!!!
-        // val inFilePath = Paths.get(cfg("input_stream"))
-        // (new java.io.FileOutputStream(outFilePath.toFile) -> new java.io.FileInputStream(inFilePath.toFile))
-    }
-    val channel = file.getChannel
-    val fileIn = java.nio.channels.Channels.newInputStream(channel)
-    val fileOut = java.nio.channels.Channels.newOutputStream(channel)
-
     val retData: Option[Json] = params.data
       .map(_.as[Map[String, (String, Seq[String])]].right.get).map { mapping =>
-        assert(targetMapping == null)
+        // assert(targetMapping == null)
         val rscIndex = RscIndex.parse(mapping)
         targetMapping = rscIndex
         // NB: kicks off a background thread to display the status of promises!!!
-        Task(bspLogger.info(s"running promises:\n${rscIndex.displayRunningPromisesSummary}"))
+        Task(bspLogger.debug(s"running promises:\n${rscIndex.displayRunningPromisesSummary}"))
           .delayExecution(FiniteDuration(10, TimeUnit.SECONDS))
           .restartUntil(_ => false)
           .runAsync(ioScheduler)
@@ -402,7 +389,7 @@ final class BloopBspServices(
       targets: Seq[bsp.BuildTargetIdentifier],
       state: State
   ): Either[String, Seq[ProjectMapping]] = {
-    baseBspLogger.info(s"targets: $targets")
+    baseBspLogger.debug(s"targets: $targets")
     if (targets.isEmpty) {
       Left("Empty build targets. Expected at least one build target identifier.")
     } else {
@@ -435,7 +422,8 @@ final class BloopBspServices(
       s"${p.name} [${elapsedMs}ms] (errors ${count.errors})"
     }
 
-    val pipeline = compileArgs.exists(_ == "--pipeline")
+    // val pipeline = compileArgs.exists(_ == "--pipeline")
+    val pipeline = false
     def compile(projects: List[Project]): Task[State] = {
       val cwd = state.build.origin.getParent
       val config = ReporterConfig.defaultFormat.copy(reverseOrder = false)
@@ -469,7 +457,7 @@ final class BloopBspServices(
         baseBspLogger,
         remoteCompileHandle = RemoteCompileHandle(remoteCompiler = Some(
           BloopHackedRemoteCompileProtocolOverBSP(runningRemoteCompiles, ioScheduler)(client))),
-        rscCompatibleTargets = Some(targetMapping)
+        rscCompatibleTargets = Option(targetMapping)
       )}
 
     val projects: List[Project] = {
@@ -534,7 +522,7 @@ final class BloopBspServices(
           Task.now((state, Right(bsp.CompileResult(None, bsp.StatusCode.Error, None, None))))
         case Right(mappings) =>
           val compileArgs = params.arguments.getOrElse(Nil)
-          baseBspLogger.info(s"mappings: $mappings")
+          baseBspLogger.debug(s"mappings: $mappings")
           compileProjects(mappings, state, compileArgs, params.originId, logger)
       }
     }
@@ -764,7 +752,7 @@ final class BloopBspServices(
       params.dataKind match {
         // NB: Commented out for now as remote compiles aren't currently necessary.
         case Some("pants-hacked-remote-compile-result") =>
-          bspLogger.info("WE GOT SOMETHING!!!")
+          bspLogger.debug("WE GOT SOMETHING!!!")
           val mapping = params.data.get.asObject.get
           val sources = mapping("sources").get.as[Seq[String]].right.get
           val req = RemoteCompileInput(sources = sources.map(AbsolutePath(_)))
@@ -778,19 +766,20 @@ final class BloopBspServices(
           } else p.success(result)
 
 
-          bspLogger.info(s"completed promise for $result for request $req")
+          bspLogger.debug(s"completed promise for $result for request $req")
 
           Task.now(state)
-        case Some(kind) =>
-          Task.raiseError[State](new IllegalArgumentException(s"Unsupported data kind: $kind"))
-        case None =>
-          val cmd = Commands.Run(List(project.name))
-          Interpreter.getMainClass(state, project, cmd.main) match {
-            case Right(name) =>
-              runMainClass(new bsp.ScalaMainClass(name, cmd.args, Nil))
-            case Left(_) =>
-              Task.raiseError[State](new IllegalStateException(s"Main class for project $project not found"))
-          }
+        // case Some(kind) =>
+        //   Task.raiseError[State](new IllegalArgumentException(s"Unsupported data kind: $kind"))
+        case _ =>
+          Task.now(state)
+          // val cmd = Commands.Run(List(project.name))
+          // Interpreter.getMainClass(state, project, cmd.main) match {
+          //   case Right(name) =>
+          //     runMainClass(new bsp.ScalaMainClass(name, cmd.args, Nil))
+          //   case Left(_) =>
+          //     Task.raiseError[State](new IllegalStateException(s"Main class for project $project not found"))
+          // }
       }
     }
 
@@ -875,6 +864,7 @@ final class BloopBspServices(
         else {
           val build = state.build
           val projects = build.loadedProjects.map(_.project)
+          // logger.info(s"projects: $projects")
           val targets = bsp.WorkspaceBuildTargetsResult(
             projects.map { p =>
               val id = toBuildTargetId(p)

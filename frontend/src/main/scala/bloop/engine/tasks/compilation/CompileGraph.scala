@@ -62,7 +62,11 @@ object CompileGraph {
   )
 
   private def maybeGetRscIndex(rscCompatibleTargets: Option[RscCompiler]): Option[RscIndex] =
-    rscCompatibleTargets.flatMap(x => Option(x.asInstanceOf[RscIndex]))
+    rscCompatibleTargets
+      .flatMap(x => if (!x.isInstanceOf[RscIndex]) {
+        throw new Exception("???????")
+      } else Option(x.asInstanceOf[RscIndex]))
+
 
   /**
    * Turns a dag of projects into a task that returns a dag of compilation results
@@ -723,6 +727,7 @@ object CompileGraph {
       compileTask
         .onErrorHandle {
           case e =>
+            logger.error("!!!!!!")
             logger.trace(e)
             logger.error(e.toString)
             throw e
@@ -749,6 +754,8 @@ object CompileGraph {
             case Parent(project, dependencies) =>
               val downstream = dependencies.map(loop)
               Task.gatherUnordered(downstream).flatMap { dagResults =>
+                logger.debug(s"dagResults: $dagResults")
+
                 val blocking = dagResults.flatMap(dag => blockedBy(dag).toList)
 
                 if (blocking.nonEmpty) {
@@ -795,9 +802,10 @@ object CompileGraph {
                       val newProducts = s.products
                       dependentProducts.+=(p -> Right(newProducts))
                       val newResult = newProducts.resultForDependentCompilationsInSameRun
-                      dependentResults
-                        .+=(newProducts.newClassesDir.toFile -> newResult)
-                        .+=(newProducts.readOnlyClassesDir.toFile -> newResult)
+
+                      dependentResults ++= Seq(newProducts.newClassesDir, newProducts.readOnlyClassesDir)
+                        .filter(_.exists)
+                        .map((_.toFile -> newResult))
                     case _ => ()
                   }
 

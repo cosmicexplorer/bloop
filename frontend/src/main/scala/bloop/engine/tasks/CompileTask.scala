@@ -1,5 +1,7 @@
 package bloop.engine.tasks
 
+import ammonite.ops._
+
 import bloop.{
   CompileInputs,
   CompileMode,
@@ -58,6 +60,7 @@ object CompileTask {
       remoteCompileHandle: RemoteCompileHandle = RemoteCompileHandle.empty,
       rscCompatibleTargets: Option[RscCompiler] = None
   ): Task[State] = {
+    // state.logger.info(s"state: $state, dag: $dag, pipeline: $pipeline, remoteCompileHandle: $remoteCompileHandle, rscCompatibleTargets: $rscCompatibleTargets")
     import bloop.data.ClientInfo
     import bloop.internal.build.BuildInfo
     val originUri = state.build.origin
@@ -89,6 +92,7 @@ object CompileTask {
     def compile(graphInputs: CompileGraph.Inputs): Task[ResultBundle] = {
       val bundle = graphInputs.bundle
       val project = bundle.project
+
       val logger = bundle.logger
       val reporter = bundle.reporter
       val previousResult = bundle.latestResult

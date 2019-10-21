@@ -2,7 +2,7 @@
 
 set -exo pipefail
 
-BLOOP_REV_TO_FIND='1.3.2+278-549e1f8c+20190917-1756'
+BLOOP_REV_TO_FIND='1.3.2+279-043629bc+20190918-1215'
 
 java_opts=()
 server_args=()
@@ -38,7 +38,7 @@ function run_with_java_home {
 # }
 
 function rsc_packaged_jars {
-  coursier fetch 'com.twitter:rsc_2.12:0.0.0-852-4e537fc2-20190917-1526'
+  coursier fetch 'com.twitter:rsc_2.12:0.0.0-854-4eaa0441'
 }
 
 run_with_java_home -jar "$COURSIER_BIN" \

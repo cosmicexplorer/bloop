@@ -33,6 +33,7 @@ object Interpreter {
   def execute(action: Action, stateTask: Task[State]): Task[State] = {
     def execute(action: Action, stateTask: Task[State]): Task[State] = {
       stateTask.flatMap { state =>
+        state.logger.info(s"action: $action, state: $state")
         action match {
           // We keep it case because there is a 'match may not be exhaustive' false positive by scalac
           // Looks related to existing bug report https://github.com/scala/bug/issues/10251
@@ -65,6 +66,7 @@ object Interpreter {
                   case cmd: Commands.Clean =>
                     execute(next, clean(cmd, state))
                   case cmd: Commands.Compile =>
+                    state.logger.info(s"compiling!! next: $next")
                     execute(next, compile(cmd, state))
                   case cmd: Commands.Console =>
                     execute(next, console(cmd, state))

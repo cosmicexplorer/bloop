@@ -186,10 +186,11 @@ case class RscIndex(targetMapping: Map[RscProjectName, RscTargetInfo]) extends R
         .distinct
       val settings = baseSettings.copy(
         cp = entireInputCp.map(_.underlying),
-        artifacts = List(rsc.settings.ArtifactScalasig),
-        memoryLocations = rsc.settings.MemoryAndFilesystem)
+        artifacts = List(rsc.settings.ArtifactScalasig))
       implicit val reporter = rsc.report.StoreReporter(settings)
-      // TODO: convert this into returning a Future or Task instead of a synchronous .go()?!
+      // FIXME: separate (the Promise[_]() used to track when rsc classfiles are made) from (the
+      // Promise used to track when scalac output directories are created). rsc needs to wait on
+      // scalac to create output dirs, but scalac needs to wait on rsc to produce its classfiles!
       val indexTask = Task.fork(Task.eval(cachedRsc.classpath.go(entireInputCp.map(_.underlying))))
       indexTask.map(Unit => (settings, reporter))
     }
